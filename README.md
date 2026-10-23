@@ -681,15 +681,16 @@ Dzień wcześniej, na każdym stanowisku:
   rozdział 0 w wersji powtórkowej, do czego jest przygotowany.
 - **Dzień 4 jest najcięższy**: trzy rozdziały plus capstone. Gdy dni 1–3 się
   przesuną, najpierw skróć capstone (`99`) — pierwsze trzy zadania mają sens
-  samodzielnie, resztę można zostawić jako pracę własną. Alternatywa:
-  przenieść Helma (`13`) na dzień 3, zgodnie z pozycją w sylabusie.
+  samodzielnie, resztę można zostawić jako pracę własną.
 - **Moduł 02 puść przed przerwą.** Prowizjonowanie dwóch maszyn na stanowisko
   trwa długo, a osiem stanowisk ściągających naraz obraz systemu to dobry
   moment na kawę.
-- **Moduł 15 wymaga drugiego klastra** (`kind-ha`). Capstone znów potrzebuje
-  `kind-basic`, więc kolejność na dzień 4 to `13` → `14` → `99` → `15`,
-  albo `15` na sam koniec.
-- **Moduł 11 psuje klaster celowo** — i to dwa razy. `labctl setup 12` wdraża
+- **Capstone (`99`) idzie na sam koniec**, po `15` i `16`: korzysta
+  z PodDisruptionBudgetu z rozdziału 15. Kolejność dnia 4 to
+  `14` → `15` → `16` → `99`. Moduł 15 wymaga drugiego klastra (`kind-ha`),
+  16 — maszyn Vagranta, a capstone znów `kind-basic`; przy 8 GiB RAM zdejmij
+  `kind-ha` przed `labctl lab 99`.
+- **Moduł 12 psuje klaster celowo** — i to dwa razy. `labctl setup 12` wdraża
   cztery zepsute obiekty, a zadania 7–9 psują **control plane**: serwer API,
   scheduler i kubeleta na `lfs458-worker2`. Awaria dzieje się dopiero w chwili
   wejścia w dane zadanie, więc zadania 1–6 da się zrobić normalnie.

@@ -444,6 +444,42 @@ ma już 1.37, a kubelet jeszcze 1.36 — i klaster działa, bo tak wolno.
 
 ---
 
+<!-- _class: lab -->
+
+# Na koniec: capstone
+
+<div data-marpit-fragment>
+
+**28 punktów + 4 dodatkowe · klaster `kind-basic`**
+
+</div>
+
+<div data-marpit-fragment>
+
+```bash
+labctl lab 99
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+Zadanie zamykające szkolenie: jedna usługa, wdrożona od zera tak, jak
+na produkcji — limity namespace'u, konfiguracja i Secret poza obrazem,
+utwardzone kontenery, rozproszenie replik, Ingress, NetworkPolicy,
+PodDisruptionBudget i wydanie bez przestoju.
+
+</div>
+
+<div data-marpit-fragment>
+
+> Dostajesz **wymagania, nie instrukcje**, a podpowiedzi są skąpsze niż
+> zwykle. Tak wygląda zadanie na egzaminie — i w pracy.
+
+</div>
+
+---
+
 # Co warto zapamiętać
 
 * poprawki dostają **trzy najnowsze minory** — upgrade minimum dwa razy w roku

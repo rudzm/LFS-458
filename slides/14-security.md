@@ -24,10 +24,9 @@ i to jest świadoma decyzja projektowa
 1. **Przegląd** — co jest domyślnie otwarte
 2. **Dostęp do API** — trzy bramki, przez które przechodzi żądanie
 3. **Uwierzytelnianie i autoryzacja** — kim jesteś, co możesz
-4. **Admission controllers** — ostatnie słowo przed zapisem
+4. **Admission controllers** — ostatnie słowo przed zapisem, limity namespace'u
 5. **Network policies** — izolacja ruchu między Podami
 6. **Lab 14** — utwardzasz klaster
-7. *(oraz)* Capstone
 
 </div>
 
@@ -201,6 +200,124 @@ kubectl -n kube-system get pod -l component=kube-apiserver \
 > Mutating idą **przed** validating. Dlatego `LimitRanger` może dołożyć
 > `requests`, zanim `ResourceQuota` sprawdzi, czy mieszczą się w limicie —
 > i dlatego Pod bez `requests` w ogóle przechodzi.
+
+</div>
+
+---
+
+# ResourceQuota i LimitRange
+
+<div class="kolumny">
+<div>
+
+<div data-marpit-fragment>
+
+### ResourceQuota — ile **razem**
+
+</div>
+
+<div data-marpit-fragment>
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: limity
+spec:
+  hard:
+    pods: "10"
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.memory: 4Gi
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+Budżet **całego namespace'u** — suma
+wszystkich jego Podów.
+
+</div>
+
+</div>
+<div>
+
+<div data-marpit-fragment>
+
+### LimitRange — ile **każdy**
+
+</div>
+
+<div data-marpit-fragment>
+
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: domyslne
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 500m
+        memory: 256Mi
+      max:
+        memory: 1Gi
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+Wartości domyślne i granice
+**dla jednego kontenera**.
+
+</div>
+
+</div>
+</div>
+
+---
+
+# Co się dzieje z Podem bez `requests`
+
+<div data-marpit-fragment>
+
+| W namespace jest | Pod bez `requests` i `limits` |
+|---|---|
+| sama `ResourceQuota` | **odrzucony** — quota nie ma czego policzyć |
+| `ResourceQuota` + `LimitRange` | przyjęty z `requests: 100m / 128Mi`, `limits: 500m / 256Mi` |
+| `LimitRange` z `max: 1Gi`, Pod chce `2Gi` | **odrzucony** — ponad granicę kontenera |
+
+</div>
+
+<div data-marpit-fragment>
+
+```text
+pods "bez-requests" is forbidden: failed quota: limity: must specify
+limits.memory for: bez-requests; requests.cpu for: bez-requests; …
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+```bash
+kubectl describe quota limity -n produkcja
+# Resource         Used   Hard
+# requests.memory  128Mi  2Gi
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+> Quota liczy **`requests` i `limits` z manifestów**, nie faktyczne zużycie —
+> tak samo jak scheduler w rozdziale 11.
 
 </div>
 
@@ -426,6 +543,8 @@ Pod, a potem zbudujesz scenę z trzema Podami i **doświadczalnie udowodnisz**,
 * **401** = uwierzytelnianie, **403** = autoryzacja
 * użytkownicy nie są obiektami; ServiceAccount jest
 * admission: najpierw mutating, potem validating
+* `ResourceQuota` to budżet namespace'u, `LimitRange` — domyślne wartości
+  kontenera; sama quota odrzuca Pody bez `requests`
 * `PodSecurity` jest wbudowany; włącza się **etykietą namespace'u**
 * `--dry-run=server` sprawdza politykę bez zapisu
 * NetworkPolicy domyślnie zabrania tego, czego nie dopuści; polityki się sumują
