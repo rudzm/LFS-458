@@ -20,6 +20,15 @@ intro: |
   > limity systemowe — najczęściej `inotify`, a objawia się to komunikatem
   > `too many open files` przy tworzeniu drugiego klastra.
 
+# Namespace stawiamy za kursanta: zadanie 1 to pytania, a Deployment
+# i PDB z dalszych zadań muszą gdzieś trafić.
+setup:
+  - name: "Tworzę namespace lfs458-m15"
+    timeout: 1m
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458-ha}"
+      $K create namespace lfs458-m15 --dry-run=client -o yaml | $K apply -f -
+
 cleanup:
   - name: "Usuwam arkusz odpowiedzi"
     timeout: 30s
@@ -57,88 +66,77 @@ cleanup:
       fi
 
 tasks:
+
   - id: task-1
     points: 4
     description: |
       **Zbadaj topologię i policz kworum.**
 
-      Zapisz wyniki w arkuszu **`~/odpowiedzi/lab-15.txt`**
-      z kluczami:
+      Pięć pytań o to, z czego składa się klaster HA i ile awarii zniesie.
 
-      | Klucz | Co ma zawierać |
-      |---|---|
-      | `nodow-cp` | ile node'ów pełni rolę control plane |
-      | `nodow-razem` | ile node'ów ma cały klaster |
-      | `kworum` | ile instancji etcd musi odpowiadać, żeby dało się zapisywać |
-      | `przezyje-awarii` | ile control plane node'ów może paść bez utraty kworum |
-
-      ```bash
-      kubectl get nodes
-      kubectl get nodes -l node-role.kubernetes.io/control-plane
-      ```
-    hints:
-      - "Control plane node'y mają etykietę `node-role.kubernetes.io/control-plane` — możesz po niej filtrować."
-      - "Kworum liczy się ze wzoru `n/2 + 1`, zaokrąglając w dół dzielenie. Dla trzech instancji to dwie."
-      - "Skoro do działania potrzeba dwóch z trzech, to paść może jedna."
-      - "Liczbę wszystkich node'ów policz sam: `kubectl get nodes --no-headers | wc -l`. Pozostałe wartości dla tego klastra: 3 control plane node'y, kworum 2, przeżyje 1 awarię."
-    solution: |
       ```bash
       kubectl config use-context kind-lfs458-ha
-      kubectl create namespace lfs458-m15
       kubectl get nodes
-
-      cat >> ~/odpowiedzi/lab-15.txt <<'EOF'
-      nodow-cp=3
-      nodow-razem=3
-      kworum=2
-      przezyje-awarii=1
-      EOF
+      kubectl get pods -n kube-system -l component=etcd -o wide
       ```
-    checks:
-      - name: "klaster ma trzy control plane node'y"
-        resource:
-          apiVersion: v1
-          kind: Node
-          labelSelector: "node-role.kubernetes.io/control-plane"
-        assert:
-          - path: "{.items[*].metadata.name}"
-            count:
-              op: eq
-              value: 3
-            message: "to zadanie wymaga klastra kind-ha — sprawdź kontekst: kubectl config current-context"
-      - name: "poprawnie policzono control plane node'y"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 nodow-cp)
-            [ "$V" = '3' ] || ZLE="$ZLE nodow-cp"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
-      - name: "liczba wszystkich node'ów zgadza się ze stanem klastra"
-        exec:
-          timeout: 60s
-          script: |
-            K="kubectl --context kind-lfs458-ha"
-            faktyczna=$($K get nodes --no-headers | wc -l | tr -d " ")
-            podana=$($K get cm topologia -n lfs458-m15 -o jsonpath='{.data.nodow-razem}' 2>/dev/null)
-            if [ "$faktyczna" = "$podana" ]; then
-              echo "zgadza-sie=$podana"
-            else
-              echo "podano=$podana a klaster ma=$faktyczna"
-            fi
-          stdoutMatches: "zgadza-sie="
-      - name: "poprawnie policzono kworum i odporność"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 kworum)
-            [ "$V" = '2' ] || ZLE="$ZLE kworum"
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 przezyje-awarii)
-            [ "$V" = '1' ] || ZLE="$ZLE przezyje-awarii"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
+    quiz:
+      pytania:
+        - pytanie: |
+            Ile node'ów pełni rolę **control plane**?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458-ha}" get nodes \
+                -l node-role.kubernetes.io/control-plane --no-headers | wc -l | tr -d ' '
+          mylne: ["1", "2", "5"]
+          wskazowka: "kubectl get nodes -l node-role.kubernetes.io/control-plane"
+
+        - pytanie: |
+            Ile node'ów ma **cały** klaster?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458-ha}" get nodes --no-headers | wc -l | tr -d ' '
+          mylne_z:
+            script: |
+              N=$(kubectl --context "${KUBECONTEXT:-kind-lfs458-ha}" get nodes --no-headers | wc -l)
+              echo $((N - 1)) $((N + 1)) $((N + 2))
+          wskazowka: "kubectl get nodes"
+
+        - pytanie: |
+            Ile instancji **etcd** działa w klastrze?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458-ha}" get pods -n kube-system \
+                -l component=etcd --no-headers | wc -l | tr -d ' '
+          mylne: ["1", "2", "5"]
+          wskazowka: "kubectl get pods -n kube-system -l component=etcd"
+
+        - pytanie: |
+            Ile instancji etcd musi odpowiadać, żeby dało się **zapisywać**?
+          odpowiedz:
+            script: |
+              N=$(kubectl --context "${KUBECONTEXT:-kind-lfs458-ha}" get pods -n kube-system \
+                    -l component=etcd --no-headers | wc -l)
+              echo $((N / 2 + 1))
+          mylne_z:
+            script: |
+              N=$(kubectl --context "${KUBECONTEXT:-kind-lfs458-ha}" get pods -n kube-system \
+                    -l component=etcd --no-headers | wc -l)
+              echo 1 "$N" $((N + 1))
+          wskazowka: "kworum to więcej niż połowa: n/2 + 1, dzielenie z zaokrągleniem w dół"
+
+        - pytanie: |
+            Ile control plane node'ów może paść **bez utraty kworum**?
+          odpowiedz:
+            script: |
+              N=$(kubectl --context "${KUBECONTEXT:-kind-lfs458-ha}" get pods -n kube-system \
+                    -l component=etcd --no-headers | wc -l)
+              echo $((N - (N / 2 + 1)))
+          mylne_z:
+            script: |
+              N=$(kubectl --context "${KUBECONTEXT:-kind-lfs458-ha}" get pods -n kube-system \
+                    -l component=etcd --no-headers | wc -l)
+              echo 0 $((N / 2 + 1)) "$N"
+          wskazowka: "od liczby instancji odejmij kworum z poprzedniego pytania"
 
   - id: task-2
     points: 4
@@ -313,7 +311,7 @@ tasks:
             V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 sciezka)
             [ "$V" = '/tmp/etcd-backup.db' ] || ZLE="$ZLE sciezka"
             V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 czego-nie-obejmuje)
-            printf '%s' "$V" | grep -qE '(?i)persistentvolume|pvc|wolumen|dane' || ZLE="$ZLE czego-nie-obejmuje"
+            printf '%s' "$V" | grep -qiE 'persistentvolume|pvc|wolumen|dane' || ZLE="$ZLE czego-nie-obejmuje"
             [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
           stdoutMatches: "WYNIK: ok"
 

@@ -48,7 +48,7 @@ Zestaw flag do każdego wywołania `etcdctl`:
 
 | # | Zadanie | Pkt |
 |---|---|---|
-| 1 | Topologia i obliczenie kworum | 4 |
+| 1 | **Pytania ABCD** o topologię i kworum | 4 |
 | 2 | Lista członków etcd | 4 |
 | 3 | Kopia zapasowa i jej weryfikacja | 5 |
 | 4 | *(dodatkowe)* `PodDisruptionBudget` | 3 |

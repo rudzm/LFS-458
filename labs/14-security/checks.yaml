@@ -395,70 +395,62 @@ tasks:
             fi
           stdoutMatches: "WYNIK: połączenie zablokowane"
 
+
   - id: task-5
     points: 3
     optional: true
     description: |
       **Zbadaj bramki swojego apiservera.**
 
-      Zadanie dodatkowe. Sprawdź, jak skonfigurowana jest autoryzacja
-      i admission w Twoim klastrze, i opisz to w arkuszu
-      **`~/odpowiedzi/lab-14.txt`**:
+      Zadanie dodatkowe. Każde żądanie przechodzi przez trzy bramki:
+      uwierzytelnienie, autoryzację i admission. Sprawdź, jak zachowują się
+      w Twoim klastrze, i odpowiedz na trzy pytania.
 
-      | Klucz | Co ma zawierać |
-      |---|---|
-      | `tryby-autoryzacji` | wartość flagi `--authorization-mode` |
-      | `psa-wbudowane` | `tak` albo `nie` — czy PodSecurity jest kontrolerem wbudowanym |
-      | `kod-401` | co znaczy kod 401: `uwierzytelnienie` czy `autoryzacja` |
+      Flagi apiservera:
 
       ```bash
       kubectl -n kube-system get pod -l component=kube-apiserver \
-        -o jsonpath='{.items[0].spec.containers[0].command}' | tr ',' '\n' | grep -E 'authorization|admission'
+        -o jsonpath='{.items[0].spec.containers[0].command}' | tr ',' '\n' \
+        | grep admission
       ```
-    hints:
-      - "Argumenty apiservera są widoczne w jego static Podzie — to ten sam Pod, co w module 03."
-      - "Typowa wartość dla klastra kubeadm/Kind to `Node,RBAC`."
-      - "PodSecurity jest wbudowanym kontrolerem admission od Kubernetesa 1.23, domyślnie włączonym od 1.25 — nie trzeba go instalować."
-    solution: |
-      ```bash
-      kubectl -n kube-system get pod -l component=kube-apiserver \
-        -o jsonpath='{.items[0].spec.containers[0].command}' \
-        | tr ',' '\n' | grep -E 'authorization|admission'
 
-      cat >> ~/odpowiedzi/lab-14.txt <<'EOF'
-      tryby-autoryzacji=Node,RBAC
-      psa-wbudowane=tak
-      kod-401=uwierzytelnienie
-      EOF
+      A tak wyślesz żądanie z pominięciem `kubectl`:
+
+      ```bash
+      SERWER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+      curl -sk -o /dev/null -w '%{http_code}\n' "$SERWER/api"
+      curl -sk -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer zmyslony' "$SERWER/api"
       ```
-    checks:
-      - name: "odczytano tryby autoryzacji apiservera"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 14 tryby-autoryzacji)
-            printf '%s' "$V" | grep -qE '(?i)node.*rbac|rbac.*node' || ZLE="$ZLE tryby-autoryzacji"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
-      - name: "wiadomo, że PodSecurity jest wbudowane"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 14 psa-wbudowane)
-            printf '%s' "$V" | grep -qE '(?i)^tak$' || ZLE="$ZLE psa-wbudowane"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
-      - name: "rozróżniono 401 od 403"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 14 kod-401)
-            printf '%s' "$V" | grep -qE '(?i)uwierzytelnien' || ZLE="$ZLE kod-401"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
+    quiz:
+      pytania:
+        - pytanie: |
+            Jakie pluginy admission włącza **jawnie** flaga `--enable-admission-plugins`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" -n kube-system get pod -l component=kube-apiserver -o json \
+                | jq -r '.items[0].spec.containers[0].command[] | select(startswith("--enable-admission-plugins="))' | cut -d= -f2-
+          mylne: ["NodeRestriction,PodSecurity", "PodSecurity", "AlwaysAdmit"]
+          wskazowka: "PodSecurity z zadania 2 działało — a czy jest na tej liście?"
+
+        - pytanie: |
+            Jaki kod HTTP zwraca apiserver na żądanie z **zmyślonym tokenem**?
+          odpowiedz:
+            script: |
+              S=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" config view --minify \
+                    -o jsonpath='{.clusters[0].cluster.server}')
+              curl -sk -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer zmyslony' "$S/api"
+          mylne: ["403", "200", "500"]
+          wskazowka: "drugie polecenie curl z treści zadania"
+
+        - pytanie: |
+            A jaki kod na żądanie **bez żadnego tokena** — jako `system:anonymous`?
+          odpowiedz:
+            script: |
+              S=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" config view --minify \
+                    -o jsonpath='{.clusters[0].cluster.server}')
+              curl -sk -o /dev/null -w '%{http_code}' "$S/api"
+          mylne: ["401", "200", "404"]
+          wskazowka: "pierwsze polecenie curl z treści zadania"
 
   - id: task-6
     points: 2

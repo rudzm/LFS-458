@@ -66,7 +66,7 @@ To poprawny komunikat, nie awaria weryfikatora.
 | 1 | `kubeadm init` + eksport kubeconfiga jako kontekst `kubeadm-lfs458` | 4 |
 | 2 | Sieć Podów — node przechodzi w `Ready` | 3 |
 | 3 | `kubeadm join` worker node'a | 4 |
-| 4 | Inwentaryzacja: podCIDR, endpoint, katalog manifestów, ważność CA | 4 |
+| 4 | **Pytania ABCD** o to, co zostawił kubeadm: pula Podów, endpoint, katalog static Podów, ważność CA | 4 |
 | 5 | *(dodatkowe)* zdjęcie `taint` z control plane node'a | 3 |
 
 ## Na co zwrócić uwagę

@@ -247,7 +247,7 @@ tasks:
       # BLAD: brak zmiennej TRYB, koncze prace
 
       cat >> ~/odpowiedzi/lab-12.txt <<'EOF'
-      blad='brak
+      blad=brak zmiennej TRYB, koncze prace
       EOF
 
       kubectl patch deployment padajacy -n lfs458-m12 --type=strategic -p \
@@ -261,7 +261,7 @@ tasks:
           script: |
             ZLE=""
             V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 12 blad)
-            printf '%s' "$V" | grep -qE '(?i)TRYB' || ZLE="$ZLE blad"
+            printf '%s' "$V" | grep -qiE 'TRYB' || ZLE="$ZLE blad"
             [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
           stdoutMatches: "WYNIK: ok"
       - name: "Deployment padajacy ma gotową replikę"
@@ -407,62 +407,52 @@ tasks:
             op: notExists
             message: "zadanie wymaga naprawy Poda, a nie nadania node'om fikcyjnej etykiety `sprzet`"
 
+
   - id: task-5
     points: 3
     optional: true
     description: |
       **Sprawdź, czym oddycha klaster.**
 
-      Zadanie dodatkowe. Odczytaj metryki node'ów i Podów, a wynik zapisz
-      w arkuszu **`~/odpowiedzi/lab-12.txt`**:
-
-      | Klucz | Co ma zawierać |
-      |---|---|
-      | `zrodlo` | nazwa komponentu, który dostarcza dane do `kubectl top` |
-      | `api-grupa` | grupa API, przez którą te metryki są wystawiane |
-      | `nodow` | liczba node'ów widocznych w `kubectl top nodes` |
+      Zadanie dodatkowe. Odczytaj metryki node'ów i Podów, a potem
+      odpowiedz na trzy pytania o to, skąd się biorą.
 
       ```bash
       kubectl top nodes
       kubectl top pods -n lfs458-m12
       kubectl get apiservices | grep metrics
       ```
-    hints:
-      - "Komponent zbierający metryki z kubeletów działa w `kube-system`. Znajdziesz go w `kubectl get deploy -n kube-system`."
-      - "Grupę API zobaczysz w `kubectl get apiservices | grep metrics` — to `metrics.k8s.io`."
-      - "```bash\ncat >> ~/odpowiedzi/lab-12.txt <<'EOF'\nzrodlo=metrics-server\napi-grupa=metrics.k8s.io\nnodow=3\nEOF\n```"
-    solution: |
-      ```bash
-      kubectl top nodes
-      kubectl get apiservices | grep metrics
+    quiz:
+      pytania:
+        - pytanie: |
+            Który komponent dostarcza dane do `kubectl top`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get apiservice v1beta1.metrics.k8s.io \
+                -o jsonpath='{.spec.service.name}'
+          mylne: ["kube-state-metrics", "prometheus", "node-exporter"]
+          wskazowka: "kubectl get apiservices | grep metrics — kolumna SERVICE"
 
-      cat >> ~/odpowiedzi/lab-12.txt <<'EOF'
-      zrodlo=metrics-server
-      api-grupa=metrics.k8s.io
-      nodow=3
-      EOF
-      ```
-    checks:
-      - name: "wskazano źródło metryk i grupę API"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 12 zrodlo)
-            [ "$V" = 'metrics-server' ] || ZLE="$ZLE zrodlo"
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 12 api-grupa)
-            [ "$V" = 'metrics.k8s.io' ] || ZLE="$ZLE api-grupa"
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 12 nodow)
-            [ "$V" = '3' ] || ZLE="$ZLE nodow"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
-      - name: "Metrics API rzeczywiście odpowiada"
-        exec:
-          timeout: 40s
-          script: |
-            kubectl --context "${KUBECONTEXT:-kind-lfs458}" top nodes --no-headers \
-              | wc -l | tr -d ' '
-          stdoutMatches: "^3$"
+        - pytanie: |
+            Przez jaką **grupę API** te metryki są wystawiane?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get apiservice v1beta1.metrics.k8s.io \
+                -o jsonpath='{.spec.group}'
+          mylne: ["monitoring.coreos.com", "custom.metrics.k8s.io", "stats.k8s.io"]
+          wskazowka: "kubectl get apiservices | grep metrics — nazwa to <wersja>.<grupa>"
+
+        - pytanie: |
+            Ile node'ów widać w `kubectl top nodes`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" top nodes --no-headers 2>/dev/null \
+                | wc -l | tr -d ' '
+          mylne_z:
+            script: |
+              N=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" top nodes --no-headers 2>/dev/null | wc -l)
+              echo 0 $((N + 1)) $((N + 2))
+          wskazowka: "kubectl top nodes"
 
   # Quiz ma własne zepsute obiekty w osobnym namespace. Gdyby pytał o te
   # z `setup`, odpowiedzi zmieniałyby się w miarę, jak kursant je naprawia.

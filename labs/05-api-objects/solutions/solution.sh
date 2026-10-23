@@ -8,15 +8,9 @@ k() { kubectl --context "$CTX" "$@"; }
 
 echo "→ zadanie 1: katalog API"
 k create namespace "$NS" --dry-run=client -o yaml | k apply -f -
-ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-05.txt"
-mkdir -p "$(dirname "$ARKUSZ")"
-cat >> "$ARKUSZ" <<EOF
-job-apiversion=batch/v1
-role-apiversion=rbac.authorization.k8s.io/v1
-netpol-apiversion=networking.k8s.io/v1
-pv-namespaced=false
-core-group=''
-EOF
+echo "   odpowiedzi do pytań w labctl lab:"
+echo "     Job: batch/v1, Role: rbac.authorization.k8s.io/v1, NetworkPolicy: networking.k8s.io/v1"
+echo "     PersistentVolume namespaced: false, grupa rdzeniowa: pusta (apiVersion: v1)"
 
 echo "→ zadanie 2: ServiceAccount, Role, RoleBinding"
 k create serviceaccount czytelnik -n "$NS" --dry-run=client -o yaml | k apply -f -

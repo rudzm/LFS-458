@@ -16,12 +16,6 @@ intro: |
   ```
 
 cleanup:
-  - name: "Usuwam arkusz odpowiedzi"
-    timeout: 30s
-    ignoreError: true
-    script: |
-      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-04.txt"
-      echo "arkusz usunięty"
   - name: "Usuwam namespace lfs458-m04"
     timeout: 3m
     script: |
@@ -225,70 +219,66 @@ tasks:
               value: 1
             message: "selektor `app=lab04,wersja=v1` powinien trafić dokładnie w Poda `prosty`"
 
+
   - id: task-3
     points: 3
     description: |
       **Odpytaj API bez `kubectl get`.**
 
       Uruchom `kubectl proxy` i pobierz `curl`-em listę Podów z namespace
-      `lfs458-m04`. Przyjrzyj się, co zwraca serwer: adresowi, polu `kind`
-      w odpowiedzi i strukturze `items`.
+      `lfs458-m04`:
 
-      Zapisz wyniki w arkuszu **`~/odpowiedzi/lab-04.txt`**:
-
-      | Klucz | Co ma zawierać |
-      |---|---|
-      | `sciezka-podow` | ścieżka URL, pod którą odpytujesz Pody tego namespace'u |
-      | `kind-odpowiedzi` | wartość pola `kind` w odpowiedzi serwera |
-      | `grupa-deploymentow` | `apiVersion` zasobu Deployment |
-    hints:
-      - "`kubectl proxy --port=8001 &` wystawia API na localhost bez uwierzytelniania. Zatrzymasz go potem przez `kill %1`."
-      - "Ścieżka do Podów w namespace: grupa rdzeniowa `v1` siedzi pod `/api`, nie pod `/apis`."
-      - "`curl -s http://localhost:8001/api/v1/namespaces/lfs458-m04/pods | jq '.kind'` — serwer zwraca listę, a listy mają własny `kind`."
-      - "Wartości: `/api/v1/namespaces/lfs458-m04/pods`, `PodList`, `apps/v1`. Deployment sprawdzisz przez `kubectl api-resources | grep deployments`."
-    solution: |
       ```bash
       kubectl proxy --port=8001 &
-      curl -s http://localhost:8001/api/v1/namespaces/lfs458-m04/pods | jq '.kind, (.items | length)'
-      kill %1
-
-      # to samo bez proxy:
-      kubectl get --raw /api/v1/namespaces/lfs458-m04/pods | jq '.kind'
-
-      cat >> ~/odpowiedzi/lab-04.txt <<'EOF'
-      sciezka-podow=/api/v1/namespaces/lfs458-m04/pods
-      kind-odpowiedzi=PodList
-      grupa-deploymentow=apps/v1
-      EOF
+      curl -s http://localhost:8001/<ścieżka> | jq .
       ```
-    checks:
-      - name: "podano poprawną ścieżkę API do Podów namespace'u"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 04 sciezka-podow)
-            [ "$V" = '/api/v1/namespaces/lfs458-m04/pods' ] || ZLE="$ZLE sciezka-podow"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
-      - name: "podano kind odpowiedzi serwera"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 04 kind-odpowiedzi)
-            [ "$V" = 'PodList' ] || ZLE="$ZLE kind-odpowiedzi"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
-      - name: "podano apiVersion Deploymentu"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 04 grupa-deploymentow)
-            [ "$V" = 'apps/v1' ] || ZLE="$ZLE grupa-deploymentow"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
+
+      Przyjrzyj się adresowi, polu `kind` w odpowiedzi i strukturze `items` —
+      potem odpowiedz na cztery pytania.
+    quiz:
+      pytania:
+        - pytanie: |
+            Pod jaką ścieżką URL serwer API wystawia **Pody namespace'u `lfs458-m04`**?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n lfs458-m04 -v=6 2>&1 \
+                | grep -o '/api/v1/namespaces/lfs458-m04/pods' | head -1
+          mylne:
+            - "/apis/v1/namespaces/lfs458-m04/pods"
+            - "/api/v1/pods/lfs458-m04"
+            - "/apis/core/v1/namespaces/lfs458-m04/pods"
+          wskazowka: "kubectl get pods -n lfs458-m04 -v=6 — w logu widać adres, pod który idzie żądanie"
+
+        - pytanie: |
+            Jaką wartość ma pole `kind` w odpowiedzi serwera?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get --raw /api/v1/namespaces/lfs458-m04/pods \
+                | jq -r '.kind'
+          mylne: ["Pod", "List", "Pods"]
+          wskazowka: "curl -s http://localhost:8001/api/v1/namespaces/lfs458-m04/pods | jq .kind"
+
+        - pytanie: |
+            Ile elementów ma tablica `items` w tej odpowiedzi?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get --raw /api/v1/namespaces/lfs458-m04/pods \
+                | jq '.items | length'
+          mylne_z:
+            script: |
+              N=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" get --raw /api/v1/namespaces/lfs458-m04/pods \
+                    | jq '.items | length')
+              echo $((N + 1)) $((N + 2)) $((N + 4))
+          wskazowka: "curl -s http://localhost:8001/api/v1/namespaces/lfs458-m04/pods | jq '.items | length'"
+
+        - pytanie: |
+            Jakie `apiVersion` ma zasób **Deployment**?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" api-resources --no-headers \
+                | awk '$NF == "Deployment" {print $(NF-2)}'
+          mylne: ["v1", "extensions/v1beta1", "apps/v1beta2"]
+          wskazowka: "kubectl api-resources | grep -i deployment"
   - id: task-4
     points: 3
     description: |

@@ -26,15 +26,12 @@ DNS_IP=$(k get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
 PROXY_MODE=$(k -n kube-system get cm kube-proxy -o yaml | awk -F': *' '/^ *mode:/ {print $2; exit}' | tr -d '"')
 [ -n "$PROXY_MODE" ] || PROXY_MODE=iptables
 
-ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-03.txt"
-mkdir -p "$(dirname "$ARKUSZ")"
-cat >> "$ARKUSZ" <<EOF
-cni=$CNI
-podcidr-klastra=$POD_CIDR_KLASTRA
-podcidr-worker=$POD_CIDR_WORKER
-dns-ip=$DNS_IP
-kube-proxy-tryb=$PROXY_MODE
-EOF
+echo "   odpowiedzi do pytań w labctl lab:"
+echo "     cni: $CNI"
+echo "     podcidr-klastra: $POD_CIDR_KLASTRA"
+echo "     podcidr-worker: $POD_CIDR_WORKER"
+echo "     dns-ip: $DNS_IP"
+echo "     kube-proxy-tryb: $PROXY_MODE"
 
 echo "→ zadanie 2: Pod z dwoma kontenerami we wspólnej sieci"
 cat <<'YAML' | k apply -f -
@@ -76,13 +73,11 @@ k wait --for=condition=Ready "pod/statyczny-${WORKER}" --timeout=180s
 
 echo "→ zadanie 4: porty komponentów"
 KUBELET_PORT=$(k get node "$WORKER" -o jsonpath='{.status.daemonEndpoints.kubeletEndpoint.Port}')
-ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-03.txt"
-mkdir -p "$(dirname "$ARKUSZ")"
-cat >> "$ARKUSZ" <<EOF
-apiserver=6443
-etcd-klienci=2379
-kubelet=$KUBELET_PORT
-EOF
+echo "   odpowiedzi do pytań w labctl lab:"
+echo "     apiserver: 6443"
+echo "     etcd-klienci: 2379"
+echo "     kubelet: $KUBELET_PORT"
+echo "     kontenerów w Podzie apiservera: 1"
 
 echo "→ zadanie 5 (dodatkowe): obserwacja static Poda"
 k delete pod "statyczny-${WORKER}" --wait=false >/dev/null 2>&1 || true
@@ -93,15 +88,12 @@ for _ in $(seq 1 60); do
 done
 k wait --for=condition=Ready "pod/statyczny-${WORKER}" --timeout=180s
 
-OWNER_KIND=$(k get pod "statyczny-${WORKER}" -o jsonpath='{.metadata.ownerReferences[0].kind}')
-OWNER_NAME=$(k get pod "statyczny-${WORKER}" -o jsonpath='{.metadata.ownerReferences[0].name}')
-ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-03.txt"
-mkdir -p "$(dirname "$ARKUSZ")"
-cat >> "$ARKUSZ" <<EOF
-wlasciciel-kind=$OWNER_KIND
-wlasciciel-nazwa=$OWNER_NAME
-jak-usunac=/etc/kubernetes/manifests/statyczny.yaml
-EOF
+k delete pod "statyczny-${WORKER}"
+sleep 15
+echo "   odpowiedzi do pytań w labctl lab:"
+echo "     właściciel:    $(k get pod "statyczny-${WORKER}" -o jsonpath='{.metadata.ownerReferences[0].name}')"
+echo "     config.source: $(k get pod "statyczny-${WORKER}" -o jsonpath='{.metadata.annotations.kubernetes\.io/config\.source}')"
+echo "     restarty:      $(k get pod "statyczny-${WORKER}" -o jsonpath='{.status.containerStatuses[0].restartCount}')"
 
 echo
 echo "Gotowe. Weryfikacja: labctl check 03"

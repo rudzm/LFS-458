@@ -49,7 +49,7 @@ k describe pod za-duzy -n "$NS" | sed -n '/Events/,$p' | tail -5
 ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-11.txt"
 mkdir -p "$(dirname "$ARKUSZ")"
 cat >> "$ARKUSZ" <<EOF
-powod='Insufficient
+powod=Insufficient memory
 EOF
 
 echo "→ zadanie 3: rozproszenie replik"

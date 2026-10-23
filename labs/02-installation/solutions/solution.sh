@@ -52,14 +52,11 @@ CA_DATE=$(vm cp "sudo kubeadm certs check-expiration" \
 CA_ISO=$(date -d "$CA_DATE" +%Y-%m-%d 2>/dev/null || date -j -f "%b %d %Y" "$CA_DATE" +%Y-%m-%d 2>/dev/null || echo "2036-01-01")
 
 k create namespace lfs458-m02 --dry-run=client -o yaml | k apply -f -
-ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-02.txt"
-mkdir -p "$(dirname "$ARKUSZ")"
-cat > "$ARKUSZ" <<EOF
-podcidr=$POD_CIDR
-endpoint=${CP_IP}:6443
-manifesty=/etc/kubernetes/manifests
-ca-wygasa=$CA_ISO
-EOF
+echo "   odpowiedzi do pytań w labctl lab:"
+echo "     podcidr: $POD_CIDR"
+echo "     endpoint: ${CP_IP}:6443"
+echo "     manifesty: /etc/kubernetes/manifests"
+echo "     ca-wygasa: $CA_ISO"
 
 echo "→ zadanie 5 (dodatkowe): zdejmuję taint z control plane node'a"
 k taint nodes k8s-cp node-role.kubernetes.io/control-plane:NoSchedule- 2>/dev/null || \

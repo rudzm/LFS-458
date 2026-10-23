@@ -2,8 +2,8 @@
 # Rozwiązanie referencyjne laba 01 — dla trenera.
 # Zadania 1 i 2 to pytania ABCD, odpowiada się na nie w `labctl lab 01`;
 # skrypt wypisuje tylko poprawne odpowiedzi do porównania.
-# Zadania 3 i 4 wykonuje naprawdę, więc potem można sprawdzić:
-#   ./labs/01-basics/solutions/solution.sh && labctl check 01
+# Zadania 3 i 4 wykonuje naprawdę. Obiekty stawia `labctl setup 01`, więc:
+#   labctl setup 01 && ./labs/01-basics/solutions/solution.sh && labctl check 01
 set -euo pipefail
 
 CTX="${KUBECONTEXT:-kind-lfs458}"

@@ -47,16 +47,15 @@ ip route
 
 | # | Zadanie | Pkt |
 |---|---|---|
-| 1 | Sieć klastra: CNI plugin, pule adresów, DNS, tryb kube-proxy | 3 |
+| 1 | **Pytania ABCD** o sieć klastra: CNI plugin, pule adresów, DNS, tryb kube-proxy | 4 |
 | 2 | Pod `wspolna-siec` — dwa kontenery, dowód wspólnego `localhost` | 3 |
 | 3 | Static Pod na `lfs458-worker` — z pominięciem serwera API | 4 |
-| 4 | Porty komponentów: apiserver, etcd, kubelet | 2 |
-| 5 | *(dodatkowe)* obserwacja: dlaczego static Pod wraca po usunięciu | 2 |
-| 6 | **Pytania ABCD** — DNS, pule adresów, komponenty | 2 |
+| 4 | **Pytania ABCD** o porty komponentów: apiserver, etcd, kubelet | 3 |
+| 5 | *(dodatkowe)* **pytania ABCD**: co się dzieje, gdy usuniesz static Poda przez API | 2 |
 
 ## Na co zwrócić uwagę
 
-- **Zadanie 1** — `podcidr-klastra` to `/16`, a `podcidr-worker` to `/24`.
+- **Zadanie 1** — pula klastra to `/16`, a wycinek node'a to `/24`.
   Ta różnica nie jest przypadkiem: controller-manager kroi pulę klastra na
   wycinki i przydziela po jednym każdemu node'owi.
 - **Zadanie 2** — spróbuj tego samego między dwoma **osobnymi** Podami.
@@ -69,6 +68,10 @@ ip route
   `docker exec lfs458-worker cat /etc/kubernetes/manifests/statyczny.yaml`.
   Kubelet nie zgłosi błędu przez API — zobaczysz go tylko w
   `docker exec lfs458-worker journalctl -u kubelet -n 30`.
+- **Zadanie 5** — `kubectl delete pod` kasuje tylko **odbicie** static Poda
+  w API (mirror Pod). Po kilku sekundach kubelet tworzy je od nowa, z nowym
+  UID, a kontener na node'ie przez cały czas działa bez restartu. Źródłem
+  prawdy jest plik w `/etc/kubernetes/manifests`, nie etcd.
 
 ## Sprzątanie
 

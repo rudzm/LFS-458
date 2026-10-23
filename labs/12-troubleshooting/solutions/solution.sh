@@ -48,7 +48,7 @@ fi
 ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-12.txt"
 mkdir -p "$(dirname "$ARKUSZ")"
 cat >> "$ARKUSZ" <<EOF
-blad='brak
+blad=brak zmiennej TRYB, koncze prace
 EOF
 k patch deployment padajacy -n "$NS" --type=strategic -p \
   '{"spec":{"template":{"spec":{"containers":[{"name":"app","command":["sleep","3600"]}]}}}}'
@@ -83,13 +83,10 @@ k wait --for=condition=Ready pod/czekajacy -n "$NS" --timeout=300s
 
 echo "→ zadanie 5 (dodatkowe): metryki"
 k top nodes || true
-ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-12.txt"
-mkdir -p "$(dirname "$ARKUSZ")"
-cat >> "$ARKUSZ" <<EOF
-zrodlo=metrics-server
-api-grupa=metrics.k8s.io
-nodow=3
-EOF
+echo "   odpowiedzi do pytań w labctl lab:"
+echo "     zrodlo: metrics-server"
+echo "     api-grupa: metrics.k8s.io"
+echo "     nodow: 3"
 
 echo
 echo "Gotowe. Weryfikacja: labctl check 12"

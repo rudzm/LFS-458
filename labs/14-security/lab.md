@@ -32,7 +32,7 @@ Dokładasz to, czego brakuje.
 | 2 | Pod Security Admission na poziomie `restricted` | 4 |
 | 3 | Scena do testu izolacji: serwer i dwaj klienci | 4 |
 | 4 | `NetworkPolicy` + **doświadczalny dowód**, że działa | 4 |
-| 5 | *(dodatkowe)* konfiguracja autoryzacji i admission | 3 |
+| 5 | *(dodatkowe)* **pytania ABCD** o admission i kody 401/403 | 3 |
 | 6 | **Pytania ABCD** — uprawnienia, PSA, tryby autoryzacji | 2 |
 
 ## Na co zwrócić uwagę

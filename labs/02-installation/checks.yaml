@@ -20,12 +20,6 @@ intro: |
   > czerwone z komunikatem o brakującym kontekście — i to jest poprawne.
 
 cleanup:
-  - name: "Usuwam arkusz odpowiedzi"
-    timeout: 30s
-    ignoreError: true
-    script: |
-      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-02.txt"
-      echo "arkusz usunięty"
   - name: "Usuwam namespace lfs458-m02"
     timeout: 3m
     ignoreError: true
@@ -269,89 +263,82 @@ tasks:
             op: notExists
             message: "k8s-worker nie powinien mieć etykiety roli control plane"
 
+
   - id: task-4
     points: 4
     description: |
       **Przeczytaj, co kubeadm po sobie zostawił.**
 
-      Zapisz wyniki w arkuszu **`~/odpowiedzi/lab-02.txt`** — zwykłym pliku
-      tekstowym, po jednej parze `klucz=wartość` na linię:
+      Cztery pytania o konfigurację, którą `kubeadm init` zapisał w klastrze
+      i na dysku maszyny `cp`. Warianty pochodzą z Twojego klastra.
 
-      | Klucz | Co ma zawierać |
-      |---|---|
-      | `podcidr` | pula adresów Podów zapisana w konfiguracji klastra |
-      | `endpoint` | adres i port, pod którym node'y widzą apiserver |
-      | `manifesty` | katalog na node'ie, z którego kubelet czyta static Pody |
-      | `ca-wygasa` | data ważności certyfikatu CA klastra (`RRRR-MM-DD`) |
-
-      Gdzie szukać:
+      Gdzie szukać — z hosta:
 
       ```bash
       kubectl -n kube-system get cm kubeadm-config -o yaml
-      sudo ls /etc/kubernetes/manifests
+      kubectl -n kube-public get cm cluster-info -o yaml
+      ```
+
+      i na maszynie `cp` (`vagrant ssh cp`):
+
+      ```bash
+      sudo grep staticPodPath /var/lib/kubelet/config.yaml
       sudo kubeadm certs check-expiration
       ```
-    hints:
-      - "ConfigMapa `kubeadm-config` w namespace `kube-system` trzyma całą `ClusterConfiguration` — w niej jest `networking.podSubnet` i `controlPlaneEndpoint` lub `localAPIEndpoint`."
-      - "Katalog ze static Podami to ta sama ścieżka na każdym klastrze kubeadm — zobacz `sudo ls /etc/kubernetes/manifests` na maszynie `cp`."
-      - "`sudo kubeadm certs check-expiration` wypisuje tabelę; wiersz `ca` ma datę w formacie `Aug 21, 2036`. Do arkusza wpisz ją jako `2036-08-21`."
-      - "Endpoint to `192.168.56.10:6443` — ten sam adres, który podajesz przy `kubeadm join`."
-    solution: |
-      ```bash
-      mkdir -p ~/odpowiedzi
-      cat > ~/odpowiedzi/lab-02.txt <<'EOF'
-      podcidr=10.244.0.0/16
-      endpoint=192.168.56.10:6443
-      manifesty=/etc/kubernetes/manifests
-      ca-wygasa=2036-08-21
-      EOF
-      ```
-    checks:
-      - name: "namespace lfs458-m02 istnieje"
-        resource:
-          apiVersion: v1
-          kind: Namespace
-          name: lfs458-m02
-        assert:
-          - path: "{.status.phase}"
-            op: eq
-            value: Active
-      - name: "podano pulę adresów Podów"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 02 podcidr)
-            [ "$V" = '10.244.0.0/16' ] || ZLE="$ZLE podcidr"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
-      - name: "podano adres apiservera"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 02 endpoint)
-            printf '%s' "$V" | grep -qE '192\.168\.56\.10:6443' || ZLE="$ZLE endpoint"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
-      - name: "podano katalog ze static Podami"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 02 manifesty)
-            [ "$V" = '/etc/kubernetes/manifests' ] || ZLE="$ZLE manifesty"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
-      - name: "podano datę wygaśnięcia CA w formacie RRRR-MM-DD"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 02 ca-wygasa)
-            printf '%s' "$V" | grep -qE '^20[0-9]{2}-[0-1][0-9]-[0-3][0-9]$' || ZLE="$ZLE ca-wygasa"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
+    quiz:
+      pytania:
+        - pytanie: |
+            Jaką pulę adresów **Podów** zapisał kubeadm w konfiguracji klastra?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kubeadm-lfs458}" -n kube-system get cm kubeadm-config \
+                -o jsonpath='{.data.ClusterConfiguration}' | awk '/podSubnet:/ {print $2}'
+          mylne: ["192.168.56.0/24", "10.0.0.0/8"]
+          mylne_z:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kubeadm-lfs458}" -n kube-system get cm kubeadm-config \
+                -o jsonpath='{.data.ClusterConfiguration}' | awk '/serviceSubnet:/ {print $2}'
+          wskazowka: "networking.podSubnet w `kubectl -n kube-system get cm kubeadm-config -o yaml`"
+
+        - pytanie: |
+            Pod jakim adresem i portem node'y widzą **serwer API**?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kubeadm-lfs458}" -n kube-public get cm cluster-info \
+                -o jsonpath='{.data.kubeconfig}' | awk '/server:/ {print $2}' | sed 's|^https://||'
+          mylne: ["10.96.0.1:443", "127.0.0.1:6443"]
+          mylne_z:
+            script: |
+              E=$(kubectl --context "${KUBECONTEXT:-kubeadm-lfs458}" -n kube-public get cm cluster-info \
+                    -o jsonpath='{.data.kubeconfig}' | awk '/server:/ {print $2}' | sed 's|^https://||')
+              echo "${E%:*}:443"
+          wskazowka: "pole server w ConfigMapie cluster-info w kube-public — ten sam adres podajesz w `kubeadm join`"
+
+        - pytanie: |
+            Z którego katalogu kubelet na maszynie `cp` czyta **static Pody**?
+          odpowiedz:
+            script: |
+              K="kubectl --context ${KUBECONTEXT:-kubeadm-lfs458}"
+              CP=$($K get nodes -l node-role.kubernetes.io/control-plane -o jsonpath='{.items[0].metadata.name}')
+              $K get --raw "/api/v1/nodes/$CP/proxy/configz" | jq -r '.kubeletconfig.staticPodPath'
+          mylne: ["/var/lib/kubelet/pods", "/etc/kubernetes/pki", "/etc/cni/net.d"]
+          wskazowka: "na maszynie cp: sudo grep staticPodPath /var/lib/kubelet/config.yaml"
+
+        - pytanie: |
+            Kiedy wygasa certyfikat **CA** klastra (`RRRR-MM-DD`)?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kubeadm-lfs458}" -n default get cm kube-root-ca.crt \
+                -o jsonpath='{.data.ca\.crt}' | openssl x509 -noout -enddate | cut -d= -f2 \
+                | xargs -I{} date -u -d {} +%F
+          mylne_z:
+            script: |
+              P=$(kubectl --context "${KUBECONTEXT:-kubeadm-lfs458}" -n default get cm kube-root-ca.crt \
+                    -o jsonpath='{.data.ca\.crt}' | openssl x509 -noout -startdate | cut -d= -f2)
+              date -u -d "$P +1 year" +%F
+              date -u -d "$P +2 years" +%F
+              date -u -d "$P +5 years" +%F
+          wskazowka: "na maszynie cp: sudo kubeadm certs check-expiration — sekcja CERTIFICATE AUTHORITY, wiersz ca"
 
   - id: task-5
     points: 3

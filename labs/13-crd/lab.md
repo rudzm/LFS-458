@@ -27,7 +27,7 @@ traktowany dokładnie tak samo jak Pod: ma skróty, kolumny, walidację i RBAC.
 | 2 | Obiekt `Zadanie` + dowód działania walidacji | 3 |
 | 3 | Kolumny wydruku i podzasób `status` | 3 |
 | 4 | RBAC dla własnego zasobu | 3 |
-| 5 | *(dodatkowe)* API agregowane — `metrics.k8s.io` | 3 |
+| 5 | *(dodatkowe)* **pytania ABCD** o API agregowane — `metrics.k8s.io` | 3 |
 | 6 | **Pytania ABCD** — skrót, apiVersion i zasięg własnego zasobu | 2 |
 
 ## Na co zwrócić uwagę

@@ -64,7 +64,7 @@ Nazwa stanu zwykle sama nazywa problem.
 | 2 | Deployment `padajacy` restartuje się w kółko | 4 |
 | 3 | Service `sklep` nie kieruje ruchu | 4 |
 | 4 | Pod `czekajacy` nigdy nie wystartował | 3 |
-| 5 | *(dodatkowe)* odczyt metryk klastra | 3 |
+| 5 | *(dodatkowe)* **pytania ABCD** o metryki klastra | 3 |
 | 6 | **Pytania ABCD** — rozpoznanie awarii po objawach | 2 |
 | 7 | **`kubectl` nie odpowiada** — apiserver nie wstaje | 4 |
 | 8 | Pod wisi w `Pending`, zdarzenia milczą | 4 |

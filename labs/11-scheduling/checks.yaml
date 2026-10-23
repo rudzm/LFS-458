@@ -129,12 +129,11 @@ tasks:
       ```
 
       Potem zapisz odczytany powód w arkuszu **`~/odpowiedzi/lab-11.txt`**
-      w `lfs458-m11`, pod kluczem `powod` — wystarczy słowo kluczowe
-      z komunikatu schedulera.
+      pod kluczem `powod` — wystarczy fraza z komunikatu schedulera.
     hints:
       - "`resources.requests.memory: 200Gi` w specyfikacji kontenera wystarczy — nie potrzeba `limits`."
       - "Zdarzenie ma `Reason: FailedScheduling`, a w wiadomości pojawia się fraza o niewystarczających zasobach."
-      - "Scheduler pisze `Insufficient memory` — właśnie tę frazę wpisz do ConfigMapy."
+      - "Scheduler pisze `Insufficient memory` — właśnie tę frazę wpisz do arkusza."
       - "```bash\ncat >> ~/odpowiedzi/lab-11.txt <<'EOF'\npowod=Insufficient memory\nEOF\n```"
     solution: |
       ```bash
@@ -156,7 +155,7 @@ tasks:
       kubectl describe pod za-duzy -n lfs458-m11 | sed -n '/Events/,$p'
 
       cat >> ~/odpowiedzi/lab-11.txt <<'EOF'
-      powod='Insufficient
+      powod=Insufficient memory
       EOF
       ```
     checks:
@@ -191,7 +190,7 @@ tasks:
           script: |
             ZLE=""
             V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 11 powod)
-            printf '%s' "$V" | grep -qE '(?i)insufficient +memory' || ZLE="$ZLE powod"
+            printf '%s' "$V" | grep -qiE 'insufficient +memory' || ZLE="$ZLE powod"
             [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
           stdoutMatches: "WYNIK: ok"
 

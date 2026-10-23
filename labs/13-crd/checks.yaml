@@ -16,12 +16,6 @@ intro: |
   ```
 
 cleanup:
-  - name: "Usuwam arkusz odpowiedzi"
-    timeout: 30s
-    ignoreError: true
-    script: |
-      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-13.txt"
-      echo "arkusz usunięty"
   - name: "Usuwam namespace lfs458-m13"
     timeout: 3m
     script: |
@@ -393,6 +387,7 @@ tasks:
             echo "list=$a delete=$b"
           stdoutMatches: "list=yes delete=no"
 
+
   - id: task-5
     points: 3
     optional: true
@@ -400,66 +395,54 @@ tasks:
       **Zajrzyj do API agregowanego, które już masz.**
 
       Zadanie dodatkowe. W klastrze działa jedno API agregowane —
-      `metrics-server` z modułu 12. Zbadaj je i opisz w arkuszu
-      **`~/odpowiedzi/lab-13.txt`**:
-
-      | Klucz | Co ma zawierać |
-      |---|---|
-      | `apiservice` | pełna nazwa obiektu APIService dla metryk |
-      | `usluga` | nazwa Service'u, do którego apiserver przekazuje żądania |
-      | `roznica` | jednym słowem: gdzie leżą dane CRD, a gdzie dane API agregowanego |
+      `metrics-server` z modułu 12. Zbadaj je i odpowiedz na cztery pytania.
 
       ```bash
       kubectl get apiservices | grep -v Local
-      kubectl get apiservice v1beta1.metrics.k8s.io -o yaml
+      kubectl get apiservice <nazwa> -o yaml
       ```
-    hints:
-      - "`kubectl get apiservices | grep -v Local` pokaże wszystkie, które **nie są** obsługiwane lokalnie przez apiserver."
-      - "Pole `spec.service` w obiekcie APIService wskazuje nazwę i namespace usługi obsługującej tę grupę."
-      - "Dane CRD leżą w **etcd**; dane API agregowanego — tam, gdzie zdecyduje jego serwer (metrics-server trzyma je w pamięci). Do klucza `roznica` wpisz `etcd`."
-    solution: |
-      ```bash
-      kubectl get apiservices | grep -v Local
-      kubectl get apiservice v1beta1.metrics.k8s.io \
-        -o jsonpath='{.spec.service.name}{"\n"}'
+    quiz:
+      pytania:
+        - pytanie: |
+            Jak nazywa się obiekt **APIService** dla metryk?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get apiservice \
+                -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep '\.metrics\.k8s\.io$' | head -1
+          mylne: ["v1.metrics.k8s.io", "metrics.k8s.io", "v1beta1.custom.metrics.k8s.io"]
+          wskazowka: "kubectl get apiservices | grep -v Local — te nie są obsługiwane lokalnie przez apiserver"
 
-      cat >> ~/odpowiedzi/lab-13.txt <<'EOF'
-      apiservice=v1beta1.metrics.k8s.io
-      usluga=metrics-server
-      roznica=etcd
-      EOF
-      ```
-    checks:
-      - name: "wskazano APIService i usługę obsługującą metryki"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 13 apiservice)
-            [ "$V" = 'v1beta1.metrics.k8s.io' ] || ZLE="$ZLE apiservice"
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 13 usluga)
-            [ "$V" = 'metrics-server' ] || ZLE="$ZLE usluga"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
-      - name: "wiadomo, gdzie leżą dane zasobów CRD"
-        exec:
-          timeout: 40s
-          script: |
-            ZLE=""
-            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 13 roznica)
-            printf '%s' "$V" | grep -qE '(?i)etcd' || ZLE="$ZLE roznica"
-            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
-          stdoutMatches: "WYNIK: ok"
-      - name: "APIService metryk faktycznie działa"
-        resource:
-          apiVersion: apiregistration.k8s.io/v1
-          kind: APIService
-          name: v1beta1.metrics.k8s.io
-        assert:
-          - path: "{.status.conditions[?(@.type=='Available')].status}"
-            op: eq
-            value: "True"
-            message: "metrics-server nie odpowiada — sprawdź `kubectl get pods -n kube-system`"
+        - pytanie: |
+            Do którego **Service'u** apiserver przekazuje żądania tej grupy?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get apiservice v1beta1.metrics.k8s.io \
+                -o jsonpath='{.spec.service.name}'
+          mylne: ["kubernetes"]
+          mylne_z:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get svc -n kube-system \
+                -o jsonpath='{.items[*].metadata.name}'
+          wskazowka: "pole spec.service w `kubectl get apiservice v1beta1.metrics.k8s.io -o yaml`"
+
+        - pytanie: |
+            W którym **namespace** działa ten Service?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get apiservice v1beta1.metrics.k8s.io \
+                -o jsonpath='{.spec.service.namespace}'
+          mylne: ["default", "monitoring", "kube-public"]
+          wskazowka: "pole spec.service.namespace w tym samym obiekcie"
+
+        - pytanie: |
+            Gdzie apiserver przechowuje obiekty zasobów zdefiniowanych przez
+            **CRD** — w przeciwieństwie do danych API agregowanego, które
+            trzyma jego własny serwer?
+          odpowiedz:
+            script: |
+              echo etcd
+          mylne: ["metrics-server", "kubelet", "kube-controller-manager"]
+          wskazowka: "CRD rozszerza samego apiservera — jego obiekty idą tam, gdzie wszystkie inne obiekty API"
 
   # Quiz instaluje WŁASNY CRD w innej grupie niż ten z zadań, żeby nie
   # mieszać się kursantowi w `zadania.lfs458.io`.

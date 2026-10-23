@@ -86,13 +86,11 @@ echo "   delete zadania → $(k auth can-i delete zadania --as=$SA -n $NS)"
 
 echo "→ zadanie 5 (dodatkowe): API agregowane"
 k get apiservices 2>/dev/null | grep -v Local | head -3 || true
-ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-13.txt"
-mkdir -p "$(dirname "$ARKUSZ")"
-cat >> "$ARKUSZ" <<EOF
-apiservice=v1beta1.metrics.k8s.io
-usluga=metrics-server
-roznica=etcd
-EOF
+echo "   odpowiedzi do pytań w labctl lab:"
+echo "     apiservice: v1beta1.metrics.k8s.io"
+echo "     usluga: metrics-server"
+echo "     namespace usługi: kube-system"
+echo "     roznica: etcd"
 
 echo
 echo "Gotowe. Weryfikacja: labctl check 13"

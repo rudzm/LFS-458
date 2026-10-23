@@ -46,23 +46,18 @@ k get pods -n "$NS" -l lfs458.io/wlasciciel --no-headers 2>/dev/null | wc -l
 echo "→ zadanie 3: odpytanie API"
 k get --raw "/api/v1/namespaces/${NS}/pods" | head -c 120; echo
 KIND=$(k get --raw "/api/v1/namespaces/${NS}/pods" | sed -n 's/.*"kind":"\([A-Za-z]*\)".*/\1/p' | head -1)
-ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-04.txt"
-mkdir -p "$(dirname "$ARKUSZ")"
-cat >> "$ARKUSZ" <<EOF
-sciezka-podow=/api/v1/namespaces/${NS}/pods
-kind-odpowiedzi=${KIND:-PodList}
-grupa-deploymentow=apps/v1
-EOF
+echo "   odpowiedzi do pytań w labctl lab:"
+echo "     sciezka-podow: /api/v1/namespaces/${NS}/pods"
+echo "     kind-odpowiedzi: ${KIND:-PodList}"
+echo "     grupa-deploymentow: apps/v1"
+echo "     elementów w items: $(k get --raw "/api/v1/namespaces/${NS}/pods" | jq '.items | length')"
 
 echo "→ zadanie 4: metadane zasobów"
-ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-04.txt"
-mkdir -p "$(dirname "$ARKUSZ")"
-cat >> "$ARKUSZ" <<EOF
-pod-skrot=po
-node-namespaced=false
-restartpolicy-domyslna=Always
-ingress-apiversion=networking.k8s.io/v1
-EOF
+echo "   odpowiedzi do pytań w labctl lab:"
+echo "     skrót persistentvolumeclaims: pvc"
+echo "     node-namespaced: false"
+echo "     restartpolicy-domyslna: Always"
+echo "     ingress-apiversion: networking.k8s.io/v1"
 
 echo "→ zadanie 5 (dodatkowe): Pod utworzony przez surowe API"
 if k get pod przez-api -n "$NS" >/dev/null 2>&1; then

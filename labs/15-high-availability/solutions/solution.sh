@@ -21,14 +21,12 @@ ALL=$(k get nodes --no-headers | wc -l | tr -d ' ')
 KWORUM=$(( CP / 2 + 1 ))
 PRZEZYJE=$(( CP - KWORUM ))
 echo "   control plane: $CP, razem: $ALL, kworum: $KWORUM, przeżyje awarii: $PRZEZYJE"
-ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-15.txt"
-mkdir -p "$(dirname "$ARKUSZ")"
-cat >> "$ARKUSZ" <<EOF
-nodow-cp=$CP
-nodow-razem=$ALL
-kworum=$KWORUM
-przezyje-awarii=$PRZEZYJE
-EOF
+echo "   odpowiedzi do pytań w labctl lab:"
+echo "     nodow-cp: $CP"
+echo "     nodow-razem: $ALL"
+echo "     instancji etcd: $(k get pods -n kube-system -l component=etcd --no-headers | wc -l | tr -d ' ')"
+echo "     kworum: $KWORUM"
+echo "     przezyje-awarii: $PRZEZYJE"
 
 echo "→ zadanie 2: członkowie etcd"
 POD=$(k -n kube-system get pod -l component=etcd -o jsonpath='{.items[0].metadata.name}')

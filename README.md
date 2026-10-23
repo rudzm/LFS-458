@@ -605,6 +605,24 @@ Zadania quizowe odbywają się w sesji `labctl lab NN`; `labctl check NN`
 pokazuje je jako `0/4 pytań` i odsyła do sesji, bo odpowiedzi padają przy
 klawiaturze, a nie w klastrze.
 
+Dwie zasady pisania pytań:
+
+- **odpowiedź i każdy wariant to jedno słowo** — `labctl` dzieli wyjście
+  skryptów na białych znakach, więc `w pamięci` dałoby dwa warianty.
+  Stąd odpowiedzi w rodzaju `etcd`, `10.96.0.10`, `Node,RBAC`
+- **po złej odpowiedzi `labctl` nie zdradza dobrej** — kursant ma dojść do niej
+  sam, sprawdzając w klastrze albo prosząc o `wskazowka` pod `?`. Dlatego
+  `wskazowka` mówi, *gdzie* szukać, a nie *co* jest odpowiedzią
+
+Pytania o to, co kursant odczytuje z klastra, robimy jako quiz. Arkusz
+`~/odpowiedzi/lab-NN.txt` (czytany przez `scripts/odpowiedz.sh`) zostaje tylko
+tam, gdzie wpis jest częścią zadania praktycznego, np. fraza z logu
+w zadaniu naprawczym.
+
+> **Pułapka:** w skryptach checków nie używaj `grep -E '(?i)…'`. GNU grep nie
+> zna tej składni i check nie przejdzie nigdy. Wielkość liter ignoruje
+> `grep -qiE`. W `stdoutMatches` `(?i)` działa, bo to wyrażenie Pythona.
+
 Operatory checków: `eq`, `matches`, `contains`, `oneOf`, `gt`, `gte`, `lt`, `lte`,
 `exists`, `notExists`. Do tego `quantifier` (`all`/`any`/`none`) dla ścieżek
 zwracających wiele wartości i `count` dla liczby trafień.

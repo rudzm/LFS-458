@@ -116,14 +116,12 @@ fi
 echo "→ zadanie 5 (dodatkowe): konfiguracja apiservera"
 k -n kube-system get pod -l component=kube-apiserver \
   -o jsonpath='{.items[0].spec.containers[0].command}' 2>/dev/null \
-  | tr ',' '\n' | grep -E 'authorization|admission' || true
-ARKUSZ="${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-14.txt"
-mkdir -p "$(dirname "$ARKUSZ")"
-cat >> "$ARKUSZ" <<EOF
-tryby-autoryzacji=Node,RBAC
-psa-wbudowane=tak
-kod-401=uwierzytelnienie
-EOF
+  | tr ',' '\n' | grep admission || true
+SERWER=$(k config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+echo "   odpowiedzi do pytań w labctl lab:"
+echo "     --enable-admission-plugins: NodeRestriction (PodSecurity jest wbudowane i włączone domyślnie)"
+echo "     zmyślony token: $(curl -sk -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer zmyslony' "$SERWER/api")"
+echo "     bez tokena:     $(curl -sk -o /dev/null -w '%{http_code}' "$SERWER/api")"
 
 echo
 echo "Gotowe. Weryfikacja: labctl check 14"
