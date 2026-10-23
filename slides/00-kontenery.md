@@ -10,7 +10,7 @@ footer: 'LFS458 · rozdział 0 · Kontenery — skąd się wzięły'
 
 # Kontenery
 
-## Rozdział 0 · wprowadzenie
+## Rozdział 0 · lab `00`
 
 Skąd się wzięły, co dokładnie izolują
 i dlaczego potrzebują orkiestratora
@@ -472,7 +472,7 @@ Na node'ach klastra, który postawimy, zobaczysz `containerd` — nie Dockera:
 
 ```bash
 kubectl get nodes -o wide          # kolumna CONTAINER-RUNTIME
-# containerd://2.2.1
+# containerd://2.3.4
 ```
 
 </div>
@@ -553,31 +553,27 @@ Deployment w 6, Service w 9.*
 
 <!-- _class: lab -->
 
-# Zanim przejdziemy dalej
+# Lab 00
 
 <div data-marpit-fragment>
 
-**Opcjonalne ćwiczenie przy klawiaturze** — bez punktów, dla rozgrzewki:
+**12 punktów**
 
 </div>
 
 <div data-marpit-fragment>
 
 ```bash
-docker run -d --name demo nginx:1.27-alpine
-docker exec demo ps -ef              # PID 1 w środku
-ps -ef | grep nginx                  # ten sam proces z hosta
-docker exec demo cat /etc/os-release # Alpine w kontenerze…
-cat /etc/os-release                  # …a na hoście Twój system
-docker rm -f demo
+labctl lab 00
 ```
 
 </div>
 
 <div data-marpit-fragment>
 
-Jeśli ostatnie dwa polecenia pokazują **różne systemy przy tym samym
-jądrze** — rozumiesz już, czym kontener różni się od maszyny wirtualnej.
+Uruchomisz kontener i zobaczysz **ten sam proces z dwóch stron**,
+postawisz mu limit pamięci w cgroupie, zostawisz ślad w warstwie zapisu
+i zajrzysz do środka node'a Kinda — gdzie kontenery uruchamia `containerd`.
 
 </div>
 

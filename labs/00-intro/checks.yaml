@@ -1,12 +1,280 @@
 module: "00"
-title: "Zanim zaczniemy — czego potrzebujesz"
+title: "Kontenery — co jest w środku"
 day: 1
-kind: intro
+# Klaster nie jest potrzebny do zadań 1–4 (sam silnik kontenerów na hoście),
+# ale ostatnie zadanie zagląda do node'ów Kinda. Przy okazji środowisko
+# staje przed modułem 01, który i tak go wymaga.
+environment: kind-basic
 
 intro: |
-  Ta strona jest jedyną w całym szkoleniu bez zadań do zaliczenia. Sprawdź na
-  niej, czy Twoje stanowisko ma wszystko, czego wymagają kolejne moduły —
-  **zanim** zacznie się pierwszy wykład.
+  Rozgrzewka z rozdziału 0: zanim dotkniemy Kubernetesa, sprawdzisz na
+  własnym komputerze, że kontener to **zwykły proces**, któremu jądro
+  pokazuje okrojony widok systemu.
 
-  Tabele niżej wypełniają się na bieżąco tym, co labctl znajduje na Twoim
-  komputerze. Zielone = gotowe, czerwone = do doinstalowania.
+  Pracujesz poleceniem `docker` na swoim stanowisku. Część zadań to pytania
+  ABCD — warianty liczymy z Twojego komputera i klastra na bieżąco, więc
+  odpowiedź trzeba sprawdzić, a nie zgadnąć.
+
+  Jeśli coś nie działa już na starcie, uruchom `labctl doctor`.
+
+cleanup:
+  - name: "Usuwam kontenery z tego laba"
+    timeout: 1m
+    ignoreError: true
+    script: |
+      "${CONTAINER_CLI:-docker}" rm -f lfs458-demo lfs458-limit lfs458-drugi 2>/dev/null
+      echo "kontenery usunięte"
+
+tasks:
+  - id: task-1
+    points: 2
+    description: |
+      **Uruchom swój pierwszy kontener.**
+
+      Uruchom w tle kontener o nazwie **`lfs458-demo`** z obrazu
+      **`nginx:1.27-alpine`**. Ma działać do końca laba — kolejne
+      zadania będą się do niego odwoływać.
+    hints:
+      - "Kontener w tle uruchamia `docker run` z flagą `-d`; nazwę nadaje `--name`."
+      - "Czy działa, zobaczysz w `docker ps`."
+      - "Komplet:\n\n```bash\ndocker run -d --name lfs458-demo nginx:1.27-alpine\ndocker ps\n```"
+    solution: |
+      ```bash
+      docker run -d --name lfs458-demo nginx:1.27-alpine
+      docker ps --filter name=lfs458-demo
+      ```
+    checks:
+      - name: "kontener lfs458-demo działa"
+        exec:
+          timeout: 30s
+          script: |
+            "${CONTAINER_CLI:-docker}" inspect -f 'stan={{.State.Running}}' lfs458-demo 2>&1
+          stdoutMatches: "stan=true"
+      - name: "kontener powstał z obrazu nginx:1.27-alpine"
+        exec:
+          timeout: 30s
+          script: |
+            "${CONTAINER_CLI:-docker}" inspect -f 'obraz={{.Config.Image}}' lfs458-demo 2>&1
+          stdoutMatches: "obraz=(docker\\.io/(library/)?)?nginx:1\\.27-alpine$"
+
+  - id: task-2
+    points: 3
+    description: |
+      **Ten sam proces, dwa widoki.**
+
+      Pięć pytań o kontener `lfs458-demo`. Raz patrzysz **ze środka**
+      (`docker exec lfs458-demo …`), raz **z hosta**.
+
+      > Przyda się `docker exec`, `docker inspect`, `ps`, `hostname`,
+      > `uname -r` i plik `/etc/os-release`.
+    quiz:
+      pytania:
+        - pytanie: |
+            Jaki PID ma główny proces nginx **wewnątrz** kontenera?
+          odpowiedz:
+            script: |
+              "${CONTAINER_CLI:-docker}" exec lfs458-demo ps -o pid,args \
+                | awk '/nginx: master/ {print $1; exit}'
+          mylne: ["0", "2", "7"]
+          wskazowka: "docker exec lfs458-demo ps"
+
+        - pytanie: |
+            A jaki PID ma **ten sam** proces, gdy patrzysz z hosta?
+          odpowiedz:
+            script: |
+              "${CONTAINER_CLI:-docker}" inspect -f '{{.State.Pid}}' lfs458-demo
+          mylne_z:
+            script: |
+              P=$("${CONTAINER_CLI:-docker}" inspect -f '{{.State.Pid}}' lfs458-demo)
+              echo 1 $((P + 13)) $((P - 29))
+          wskazowka: "docker inspect -f '{{.State.Pid}}' lfs458-demo — albo `ps -ef | grep 'nginx: master'` na hoście"
+
+        - pytanie: |
+            Jaki **hostname** widzi kontener? To efekt namespace'u `uts`.
+          odpowiedz:
+            script: |
+              "${CONTAINER_CLI:-docker}" exec lfs458-demo hostname
+          mylne_z:
+            script: |
+              hostname
+              for _ in 1 2; do tr -dc a-f0-9 </dev/urandom | head -c12; echo; done
+          wskazowka: "docker exec lfs458-demo hostname — i porównaj z kolumną CONTAINER ID w `docker ps`"
+
+        - pytanie: |
+            Jaki system (pole `ID` w `/etc/os-release`) widzi kontener?
+          odpowiedz:
+            script: |
+              "${CONTAINER_CLI:-docker}" exec lfs458-demo sh -c '. /etc/os-release; echo "$ID"'
+          mylne: ["debian", "ubuntu", "rhel"]
+          mylne_z:
+            script: |
+              . /etc/os-release; echo "$ID"
+          wskazowka: "docker exec lfs458-demo cat /etc/os-release"
+
+        - pytanie: |
+            Jaką wersję **jądra** widzi kontener z Alpine'em w środku?
+          odpowiedz:
+            script: |
+              "${CONTAINER_CLI:-docker}" exec lfs458-demo uname -r
+          mylne: ["6.6.31-0-virt", "5.15.0-1-alpine", "4.19.0-container"]
+          wskazowka: "docker exec lfs458-demo uname -r — i porównaj z `uname -r` na hoście"
+
+  - id: task-3
+    points: 3
+    description: |
+      **Postaw kontenerowi granicę.**
+
+      Namespace'y decydują, *co* proces widzi; **cgroups** — *ile* może zużyć.
+
+      Uruchom drugi kontener w tle:
+
+      - nazwa **`lfs458-limit`**
+      - obraz `nginx:1.27-alpine`
+      - limit pamięci **64 MiB**
+
+      Potem zajrzyj do pliku `/sys/fs/cgroup/memory.max` w obu kontenerach.
+      Jądro egzekwuje dokładnie tę liczbę — z niej Kubernetes zbuduje
+      `limits` z rozdziału 6.
+    hints:
+      - "Limit pamięci ustawia flaga `--memory` (albo `-m`) polecenia `docker run`."
+      - "Odczyt limitu ze środka:\n\n```bash\ndocker exec lfs458-limit cat /sys/fs/cgroup/memory.max\n```\n\nW `lfs458-demo` zobaczysz tam `max`, czyli brak limitu."
+      - "Komplet:\n\n```bash\ndocker run -d --name lfs458-limit --memory 64m nginx:1.27-alpine\ndocker exec lfs458-limit cat /sys/fs/cgroup/memory.max\n```"
+    solution: |
+      ```bash
+      docker run -d --name lfs458-limit --memory 64m nginx:1.27-alpine
+      docker exec lfs458-limit cat /sys/fs/cgroup/memory.max   # 67108864
+      docker exec lfs458-demo  cat /sys/fs/cgroup/memory.max   # max
+      ```
+
+      64 MiB to 64 × 1024 × 1024 = 67108864 bajtów.
+    checks:
+      - name: "kontener lfs458-limit działa"
+        exec:
+          timeout: 30s
+          script: |
+            "${CONTAINER_CLI:-docker}" inspect -f 'stan={{.State.Running}}' lfs458-limit 2>&1
+          stdoutMatches: "stan=true"
+      - name: "silnik kontenerów zapisał limit 64 MiB"
+        exec:
+          timeout: 30s
+          script: |
+            "${CONTAINER_CLI:-docker}" inspect -f 'limit={{.HostConfig.Memory}}' lfs458-limit 2>&1
+          stdoutMatches: "limit=67108864$"
+      - name: "jądro egzekwuje limit w cgroupie kontenera"
+        exec:
+          timeout: 30s
+          script: |
+            echo "memory.max=$("${CONTAINER_CLI:-docker}" exec lfs458-limit cat /sys/fs/cgroup/memory.max 2>&1)"
+          stdoutMatches: "memory.max=67108864$"
+
+  - id: task-4
+    points: 2
+    description: |
+      **Zostaw ślad w warstwie zapisu.**
+
+      Obraz jest niezmienny. Wszystko, co kontener zapisze, trafia do jego
+      **własnej** warstwy zapisu.
+
+      1. Utwórz w kontenerze `lfs458-demo` pusty plik **`/tmp/slad.txt`**
+      2. Zobacz, co zmieniło się względem obrazu: `docker diff lfs458-demo`
+      3. Uruchom z **tego samego obrazu** trzeci kontener w tle, o nazwie
+         **`lfs458-drugi`** — i sprawdź, że pliku `/tmp/slad.txt` w nim nie ma
+
+      > Dlatego dane trzyma się poza kontenerem. Warstwa zapisu ginie razem
+      > z nim — wolumenom poświęcimy cały rozdział 8.
+    hints:
+      - "Polecenie w działającym kontenerze uruchamia `docker exec`; pusty plik tworzy `touch`."
+      - "W `docker diff` litera `A` oznacza plik dodany, `C` — zmieniony, `D` — usunięty."
+      - "Komplet:\n\n```bash\ndocker exec lfs458-demo touch /tmp/slad.txt\ndocker diff lfs458-demo\ndocker run -d --name lfs458-drugi nginx:1.27-alpine\ndocker exec lfs458-drugi ls /tmp\n```"
+    solution: |
+      ```bash
+      docker exec lfs458-demo touch /tmp/slad.txt
+      docker diff lfs458-demo | grep slad          # A /tmp/slad.txt
+
+      docker run -d --name lfs458-drugi nginx:1.27-alpine
+      docker exec lfs458-drugi ls -l /tmp/slad.txt # No such file or directory
+      ```
+    checks:
+      - name: "plik /tmp/slad.txt jest w warstwie zapisu lfs458-demo"
+        exec:
+          timeout: 30s
+          script: |
+            "${CONTAINER_CLI:-docker}" diff lfs458-demo 2>&1 | grep -x 'A /tmp/slad.txt' \
+              || echo "brak wpisu A /tmp/slad.txt w docker diff"
+          stdoutMatches: "^A /tmp/slad\\.txt$"
+      - name: "kontener lfs458-drugi działa z tego samego obrazu"
+        exec:
+          timeout: 30s
+          script: |
+            "${CONTAINER_CLI:-docker}" inspect -f 'stan={{.State.Running}} obraz={{.Config.Image}}' lfs458-drugi 2>&1
+          stdoutMatches: "stan=true obraz=(docker\\.io/(library/)?)?nginx:1\\.27-alpine$"
+      - name: "w lfs458-drugi pliku nie ma — każdy kontener ma własną warstwę"
+        exec:
+          timeout: 30s
+          script: |
+            C="${CONTAINER_CLI:-docker}"
+            if ! $C inspect lfs458-drugi >/dev/null 2>&1; then
+              echo "WYNIK: brak kontenera lfs458-drugi"
+            elif $C exec lfs458-drugi test -e /tmp/slad.txt; then
+              echo "WYNIK: plik jest — utworzyłeś go też tutaj?"
+            else
+              echo "WYNIK: pliku nie ma"
+            fi
+          stdoutMatches: "WYNIK: pliku nie ma"
+
+  - id: task-5
+    points: 2
+    description: |
+      **Zajrzyj pod spód klastra.**
+
+      Cztery pytania o obraz i o to, **kto** uruchamia kontenery w Kubernetesie.
+      Klaster `kind-lfs458` stoi już na Twoim komputerze — jego node'y to
+      kontenery widoczne w `docker ps`.
+
+      > Przyda się `docker image inspect`, `docker inspect`, `docker exec`
+      > i `kubectl get nodes -o wide`.
+    quiz:
+      pytania:
+        - pytanie: |
+            Z ilu warstw składa się obraz `nginx:1.27-alpine`?
+          odpowiedz:
+            script: |
+              "${CONTAINER_CLI:-docker}" image inspect -f '{{len .RootFS.Layers}}' nginx:1.27-alpine
+          mylne_z:
+            script: |
+              N=$("${CONTAINER_CLI:-docker}" image inspect -f '{{len .RootFS.Layers}}' nginx:1.27-alpine)
+              echo 1 $((N + 3)) $((N + 6))
+          wskazowka: "docker image inspect -f '{{len .RootFS.Layers}}' nginx:1.27-alpine — albo `docker history`"
+
+        - pytanie: |
+            Jaki runtime kontenerów raportują node'y klastra?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes \
+                -o jsonpath='{.items[0].status.nodeInfo.containerRuntimeVersion}'
+          mylne: ["cri-o://1.34.1", "podman://5.4.2"]
+          mylne_z:
+            script: |
+              echo "docker://$("${CONTAINER_CLI:-docker}" version --format '{{.Server.Version}}' 2>/dev/null || echo 29.1.3)"
+          wskazowka: "kolumna CONTAINER-RUNTIME w `kubectl get nodes -o wide`"
+
+        - pytanie: |
+            Node `lfs458-worker` to też kontener na Twoim hoście.
+            Z jakiego obrazu został uruchomiony (bez końcówki `@sha256:…`)?
+          odpowiedz:
+            script: |
+              "${CONTAINER_CLI:-docker}" inspect -f '{{.Config.Image}}' lfs458-worker | cut -d@ -f1
+          mylne: ["kindest/base:v1.37.0", "ubuntu:24.04", "nginx:1.27-alpine"]
+          wskazowka: "docker ps — kolumna IMAGE przy lfs458-worker, albo `docker inspect -f '{{.Config.Image}}' lfs458-worker`"
+
+        - pytanie: |
+            Ile kontenerów działa **w środku** node'a `lfs458-control-plane`?
+            `docker ps` na hoście ich nie pokaże — uruchamia je `containerd`.
+          odpowiedz:
+            script: |
+              "${CONTAINER_CLI:-docker}" exec lfs458-control-plane crictl ps -q | wc -l | tr -d ' '
+          mylne_z:
+            script: |
+              N=$("${CONTAINER_CLI:-docker}" exec lfs458-control-plane crictl ps -q | wc -l)
+              echo 0 $((N + 4)) $((N * 2 + 1))
+          wskazowka: "docker exec lfs458-control-plane crictl ps"
