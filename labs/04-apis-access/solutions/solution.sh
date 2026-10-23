@@ -52,12 +52,12 @@ echo "     kind-odpowiedzi: ${KIND:-PodList}"
 echo "     grupa-deploymentow: apps/v1"
 echo "     elementów w items: $(k get --raw "/api/v1/namespaces/${NS}/pods" | jq '.items | length')"
 
-echo "→ zadanie 4: metadane zasobów"
+echo "→ zadanie 4: dokumentacja z klastra"
 echo "   odpowiedzi do pytań w labctl lab:"
-echo "     skrót persistentvolumeclaims: pvc"
-echo "     node-namespaced: false"
-echo "     restartpolicy-domyslna: Always"
-echo "     ingress-apiversion: networking.k8s.io/v1"
+echo "     restartPolicy domyślnie: $(k explain pod.spec.restartPolicy 2>/dev/null | grep -oE 'Default to [A-Za-z]+' | awk '{print $3}')"
+echo "     typ containerPort: integer"
+echo "     grupa batch: $(k api-versions | grep '^batch/' | head -1)"
+echo "     ścieżka grupy apps: /apis/$(k get --raw /apis/apps | jq -r '.preferredVersion.groupVersion')"
 
 echo "→ zadanie 5 (dodatkowe): Pod utworzony przez surowe API"
 if k get pod przez-api -n "$NS" >/dev/null 2>&1; then

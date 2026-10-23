@@ -392,8 +392,8 @@ przez `helm lint` i `helm template` — **bez instalacji**.
 
 <div data-marpit-fragment>
 
-> Weryfikator patrzy wyłącznie na stan klastra. Pliki są środkiem,
-> nie celem — organizuj je, jak chcesz.
+> Weryfikator patrzy na stan klastra, nie na układ plików. Pliki są
+> środkiem, nie celem — organizuj je, jak chcesz.
 
 </div>
 

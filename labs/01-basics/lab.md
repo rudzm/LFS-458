@@ -58,7 +58,7 @@ W skrócie:
 
 | # | Zadanie | Pkt |
 |---|---|---|
-| 1 | **Pytania** o node'y i control plane — pięć pytań ABCD | 4 |
+| 1 | **Pytania** o node'y i control plane — cztery pytania ABCD | 4 |
 | 2 | **Pytania** o aplikację `kasa` w namespace `sklep-demo` — cztery pytania ABCD | 4 |
 | 3 | Usunięcie Poda z Deploymentu `petla` i obserwacja samonaprawy | 4 |
 | 4 | *(dodatkowe)* skalowanie `petla` do 4 replik | 2 |
@@ -70,8 +70,8 @@ przed pierwszym zadaniem. Ty czytasz klaster i patrzysz, jak się zachowuje.
 
 - **Zadanie 1** — komponenty control plane działają jako *static Pody*. Kubelet
   czyta ich definicje z katalogu `/etc/kubernetes/manifests` na node'ie i uruchamia
-  je bez udziału schedulera. Dlatego nie ma dla nich Deploymentu ani ReplicaSetu —
-  ich właścicielem jest sam Node.
+  je bez udziału schedulera. Dlatego nie ma dla nich Deploymentu ani ReplicaSetu.
+  Zajrzymy do nich dokładniej w rozdziale 3.
 - **Zadania 1 i 2** to pytania ABCD. Warianty pochodzą z Twojego klastra, więc nie
   da się ich zgadnąć z pamięci — trzeba uruchomić polecenie. Po złej odpowiedzi
   `labctl` nie zdradza dobrej; podpowiedź dostaniesz pod `?`.

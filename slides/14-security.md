@@ -390,7 +390,7 @@ kubectl exec -n lfs458-m14 zabroniony -- wget -qO- --timeout=4 http://$IP:5678
 
 <div data-marpit-fragment>
 
-**16 punktów + 3 dodatkowe**
+**18 punktów + 3 dodatkowe**
 
 </div>
 

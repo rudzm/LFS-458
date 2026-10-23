@@ -446,7 +446,7 @@ kubectl taint node lfs458-control-plane node-role.kubernetes.io/control-plane:No
 
 <div data-marpit-fragment>
 
-**14 punktów + 3 dodatkowe**
+**16 punktów + 3 dodatkowe**
 
 </div>
 

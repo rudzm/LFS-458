@@ -32,6 +32,10 @@ intro: |
   W tym labie nic nie budujesz — **czytasz klaster** i patrzysz, jak sam
   siebie naprawia.
 
+  Obiekty w klastrze są pogrupowane w **namespace'y** — coś jak katalogi.
+  Na razie wystarczy, że flaga `-n <nazwa>` mówi `kubectl`, do którego
+  zajrzeć; dokładnie omówimy je w rozdziale 5.
+
   Większość punktów zdobywasz, odpowiadając na pytania o Twój klaster.
   Warianty odpowiedzi wyliczamy z niego na bieżąco, więc nie da się ich
   zgadnąć z pamięci — trzeba uruchomić polecenie.
@@ -64,7 +68,7 @@ tasks:
     description: |
       **Rozejrzyj się po klastrze.**
 
-      Pięć pytań o maszyny i o control plane. Każdej odpowiedzi szukasz
+      Cztery pytania o maszyny i o control plane. Każdej odpowiedzi szukasz
       `kubectl`-em — warianty pochodzą z Twojego klastra.
 
       > Przyda się `kubectl get nodes -o wide` i `kubectl get pods -n kube-system`.
@@ -112,20 +116,6 @@ tasks:
               kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n kube-system \
                 -o jsonpath='{.items[*].metadata.name}'
           wskazowka: "kubectl get pods -n kube-system — nazwa static Poda kończy się nazwą node'a"
-
-        - pytanie: |
-            Obiekt jakiego **rodzaju** jest właścicielem (`ownerReferences`)
-            tego Poda? Odpowiedź pokazuje, czym naprawdę jest static Pod.
-          odpowiedz:
-            script: |
-              K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
-              POD=$($K get pods -n kube-system -l component=kube-apiserver \
-                      -o jsonpath='{.items[0].metadata.name}')
-              $K get pod "$POD" -n kube-system \
-                -o jsonpath='{.metadata.ownerReferences[0].kind}'
-          mylne: ["ReplicaSet", "DaemonSet", "Deployment"]
-          wskazowka: |
-            kubectl get pod <nazwa> -n kube-system -o jsonpath='{.metadata.ownerReferences[0].kind}'
 
   - id: task-2
     points: 4
@@ -314,12 +304,11 @@ tasks:
     hints:
       - "Skalowanie to jedno polecenie: `kubectl scale deployment petla -n lfs458-m01 --replicas=4`."
       - "Rozmieszczenie zobaczysz w kolumnie NODE: `kubectl get pods -n lfs458-m01 -o wide`."
-      - "Jeśli check jest czerwony, poczekaj, aż nowe Pody będą Ready: `kubectl rollout status deployment/petla -n lfs458-m01`."
+      - "Jeśli check jest czerwony, poczekaj, aż nowe Pody będą Ready: `kubectl get pods -n lfs458-m01 -w`."
     solution: |
       ```bash
       kubectl scale deployment petla -n lfs458-m01 --replicas=4
-      kubectl rollout status deployment/petla -n lfs458-m01
-      kubectl get pods -n lfs458-m01 -o wide
+      kubectl get pods -n lfs458-m01 -o wide -w   # Ctrl+C, gdy będą cztery Ready
       ```
     checks:
       - name: "Deployment ma 4 gotowe repliki"

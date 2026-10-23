@@ -1,6 +1,6 @@
 # Lab 02 — klaster od zera
 
-**15 punktów obowiązkowych + 3 dodatkowe**
+**15 punktów obowiązkowych**
 
 ## Cel
 
@@ -67,7 +67,6 @@ To poprawny komunikat, nie awaria weryfikatora.
 | 2 | Sieć Podów — node przechodzi w `Ready` | 3 |
 | 3 | `kubeadm join` worker node'a | 4 |
 | 4 | **Pytania ABCD** o to, co zostawił kubeadm: pula Podów, endpoint, katalog static Podów, ważność CA | 4 |
-| 5 | *(dodatkowe)* zdjęcie `taint` z control plane node'a | 3 |
 
 ## Na co zwrócić uwagę
 

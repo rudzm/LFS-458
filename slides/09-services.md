@@ -337,7 +337,7 @@ kubectl exec <pod> -- nslookup kubernetes.default        # test od środka
 
 <div data-marpit-fragment>
 
-**15 punktów + 3 dodatkowe**
+**17 punktów + 3 dodatkowe**
 
 </div>
 

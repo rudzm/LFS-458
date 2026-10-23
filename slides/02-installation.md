@@ -342,7 +342,7 @@ Co się dzieje przy `join`:
 
 <div data-marpit-fragment>
 
-**15 punktów + 3 dodatkowe · dwie maszyny wirtualne**
+**15 punktów · dwie maszyny wirtualne**
 
 </div>
 

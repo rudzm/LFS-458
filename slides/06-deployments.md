@@ -341,7 +341,7 @@ kubectl label pod <nazwa> app=sklep-debug --overwrite
 
 <div data-marpit-fragment>
 
-**18 punktów + 3 dodatkowe**
+**20 punktów + 3 dodatkowe**
 
 </div>
 

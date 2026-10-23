@@ -58,9 +58,5 @@ echo "     endpoint: ${CP_IP}:6443"
 echo "     manifesty: /etc/kubernetes/manifests"
 echo "     ca-wygasa: $CA_ISO"
 
-echo "→ zadanie 5 (dodatkowe): zdejmuję taint z control plane node'a"
-k taint nodes k8s-cp node-role.kubernetes.io/control-plane:NoSchedule- 2>/dev/null || \
-  echo "   taintu już nie było"
-
 echo
 echo "Gotowe. Weryfikacja: labctl check 02"

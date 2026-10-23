@@ -94,7 +94,7 @@ tasks:
           wskazowka: "kubectl get nodes -o custom-columns=NODE:.metadata.name,CIDR:.spec.podCIDR"
 
         - pytanie: |
-            Jaki adres ClusterIP ma usługa **DNS** klastra?
+            Jaki adres ma usługa **DNS** klastra (Service `kube-dns`)?
           odpowiedz:
             script: |
               kubectl --context "${KUBECONTEXT:-kind-lfs458}" get svc kube-dns -n kube-system \
@@ -356,14 +356,13 @@ tasks:
           wskazowka: "kubectl get pod statyczny-lfs458-worker -o yaml | grep -A5 ownerReferences"
 
         - pytanie: |
-            Jaką wartość ma adnotacja `kubernetes.io/config.source` tego Poda?
-            Mówi, skąd kubelet wziął jego definicję.
+            Obiekt jakiego **rodzaju** jest tym właścicielem?
           odpowiedz:
             script: |
               kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pod statyczny-lfs458-worker -n default \
-                -o jsonpath='{.metadata.annotations.kubernetes\.io/config\.source}'
-          mylne: ["api", "http", "etcd"]
-          wskazowka: "kubectl get pod statyczny-lfs458-worker -o yaml | grep config.source"
+                -o jsonpath='{.metadata.ownerReferences[0].kind}'
+          mylne: ["ReplicaSet", "DaemonSet", "Deployment"]
+          wskazowka: "kubectl get pod statyczny-lfs458-worker -o jsonpath='{.metadata.ownerReferences[0].kind}'"
 
         - pytanie: |
             Pod wrócił po usunięciu. Ile **restartów** ma teraz jego kontener?

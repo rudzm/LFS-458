@@ -92,7 +92,7 @@ k delete pod "statyczny-${WORKER}"
 sleep 15
 echo "   odpowiedzi do pytań w labctl lab:"
 echo "     właściciel:    $(k get pod "statyczny-${WORKER}" -o jsonpath='{.metadata.ownerReferences[0].name}')"
-echo "     config.source: $(k get pod "statyczny-${WORKER}" -o jsonpath='{.metadata.annotations.kubernetes\.io/config\.source}')"
+echo "     rodzaj:        $(k get pod "statyczny-${WORKER}" -o jsonpath='{.metadata.ownerReferences[0].kind}')"
 echo "     restarty:      $(k get pod "statyczny-${WORKER}" -o jsonpath='{.status.containerStatuses[0].restartCount}')"
 
 echo

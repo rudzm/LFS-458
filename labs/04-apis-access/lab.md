@@ -39,7 +39,7 @@ za każdym razem, gdy `kubectl` zachowa się dziwnie.
 | 1 | Pod `prosty` z manifestu — etykiety, nazwany port, `requests` i `limits` | 4 |
 | 2 | Adnotacje kontra etykiety na tym samym Podzie | 3 |
 | 3 | **Pytania ABCD** o odpowiedź API: ścieżka, `kind`, `items`, grupa Deploymentu | 3 |
-| 4 | **Pytania ABCD** — skrót, zasięg, wartość domyślna, `apiVersion` | 3 |
+| 4 | **Pytania ABCD** — wartość domyślna i typ pola, wersja grupy, ścieżka w API | 3 |
 | 5 | *(dodatkowe)* Pod utworzony przez `kubectl create --raw` | 3 |
 
 ## Na co zwrócić uwagę

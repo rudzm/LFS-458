@@ -425,7 +425,7 @@ docker exec lfs458-worker grep staticPodPath /var/lib/kubelet/config.yaml
 
 <div data-marpit-fragment>
 
-**12 punktów + 2 dodatkowe**
+**14 punktów + 2 dodatkowe**
 
 </div>
 

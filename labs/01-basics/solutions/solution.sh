@@ -16,7 +16,6 @@ echo "   node'ów:       $(k get nodes --no-headers | wc -l | tr -d ' ')"
 echo "   control plane: $(k get nodes -l node-role.kubernetes.io/control-plane -o jsonpath='{.items[0].metadata.name}')"
 echo "   wersja:        $(k get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}')"
 echo "   Pod apiservera: $APISERVER"
-echo "   właściciel:    $(k get pod "$APISERVER" -n kube-system -o jsonpath='{.metadata.ownerReferences[0].kind}')"
 
 echo "→ zadanie 2: aplikacja w namespace sklep-demo"
 POD=$(k get pods -n sklep-demo -l app=kasa -o jsonpath='{.items[0].metadata.name}')
