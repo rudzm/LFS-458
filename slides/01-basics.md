@@ -103,7 +103,7 @@ i kto za tym wszystkim stoi
 
 <div data-marpit-fragment>
 
-*Zobaczysz to na własne oczy w zadaniu 4 laba.*
+*Zobaczysz to na własne oczy w zadaniu 3 laba.*
 
 </div>
 
@@ -245,7 +245,7 @@ kubectl get pods -v=8 2>&1 | grep -E 'GET|Response Status'
 
 <div data-marpit-fragment>
 
-**10 punktów + 2 dodatkowe**
+**12 punktów + 2 dodatkowe**
 
 </div>
 
@@ -259,9 +259,9 @@ labctl lab 01
 
 <div data-marpit-fragment>
 
-Zinwentaryzujesz node'y i komponenty control plane, znajdziesz dodatki
-doinstalowane do klastra i **zobaczysz reconciliation loop na żywo** —
-usuwając Poda i patrząc, co się stanie.
+Odpowiesz na pytania o node'y, control plane i działającą już aplikację,
+a potem **zobaczysz reconciliation loop na żywo** — usuwając Poda
+i patrząc, co się stanie. Niczego nie tworzysz.
 
 </div>
 

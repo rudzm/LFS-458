@@ -5,6 +5,10 @@ chapterTitle: "Basics of Kubernetes"
 day: 1
 environment: kind-basic
 
+# W tym module kursant jeszcze NICZEGO nie tworzy. Z wykładu zna dopiero
+# strukturę klastra i reconciliation loop — Deploymenty, namespace'y i cała
+# reszta modelu obiektowego to rozdziały 5 i 6. Dlatego wszystkie obiekty
+# stawia tu `setup`, a zadania polegają na czytaniu klastra i obserwowaniu go.
 setup:
   - name: "Wdrażam przykładową aplikację w namespace sklep-demo"
     timeout: 3m
@@ -14,19 +18,23 @@ setup:
       $K create deployment kasa --image=nginx:1.27-alpine --replicas=1 \
         -n sklep-demo --dry-run=client -o yaml | $K apply -f -
       $K rollout status deployment/kasa -n sklep-demo --timeout=180s
+  - name: "Wdrażam Deployment petla w namespace lfs458-m01"
+    timeout: 3m
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      $K create namespace lfs458-m01 --dry-run=client -o yaml | $K apply -f -
+      $K create deployment petla --image=nginx:1.27-alpine --replicas=2 \
+        -n lfs458-m01 --dry-run=client -o yaml | $K apply -f -
+      $K rollout status deployment/petla -n lfs458-m01 --timeout=180s
 
 intro: |
-  W tym labie rozejrzysz się po strukturze klastra i zobaczysz na żywo pętlę
-  sterowania z wykładu.
+  Klaster już stoi, a w nim działa kilka rzeczy, których nie uruchamiałeś.
+  W tym labie nic nie budujesz — **czytasz klaster** i patrzysz, jak sam
+  siebie naprawia.
 
-  Odpowiedzi na pytania „rozpoznawcze” wpisujesz do arkusza
-  **`~/odpowiedzi/lab-01.txt`** — zwykłego pliku tekstowego w formacie
-  `klucz=wartość`, po jednej parze w wierszu. Weryfikator czyta go tak samo
-  jak klaster, więc liczy się treść, nie sposób wpisania:
-
-  ```bash
-  echo 'liczba-nodow=3' >> ~/odpowiedzi/lab-01.txt
-  ```
+  Większość punktów zdobywasz, odpowiadając na pytania o Twój klaster.
+  Warianty odpowiedzi wyliczamy z niego na bieżąco, więc nie da się ich
+  zgadnąć z pamięci — trzeba uruchomić polecenie.
 
   ```bash
   kubectl config use-context kind-lfs458
@@ -42,293 +50,185 @@ cleanup:
     script: |
       kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace sklep-demo \
         --ignore-not-found --wait=true
-  - name: "Usuwam arkusz odpowiedzi"
-    timeout: 30s
-    ignoreError: true
-    script: |
-      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-01.txt"
-      echo "arkusz usunięty"
   - name: "Usuwam namespace lfs458-m01 wraz z zawartością"
     timeout: 3m
     script: |
-      kubectl --context kind-lfs458 delete namespace lfs458-m01 --ignore-not-found --wait=true
-  - name: "Usuwam namespace zadania quizowego"
-    timeout: 3m
-    ignoreError: true
-    script: |
-      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m01-quiz \
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m01 \
         --ignore-not-found --wait=true
 
 tasks:
+  # Pytania zamiast budowania: na tym etapie kursant zna z wykładu dwie role
+  # maszyn i static Pody, więc pyta się o to, co widać w `kubectl get`.
   - id: task-1
-    points: 1
+    points: 4
     description: |
-      **Przygotuj miejsce na odpowiedzi.**
+      **Rozejrzyj się po klastrze.**
 
-      Utwórz namespace `lfs458-m01` i oznacz go etykietą `lfs458.io/modul=01`.
-      Wszystkie obiekty z tego laba mają powstać właśnie w tym namespace.
-    hints:
-      - "Namespace tworzy się poleceniem `kubectl create namespace <nazwa>`."
-      - "Etykietę dokładasz osobno: `kubectl label namespace <nazwa> klucz=wartość`."
-      - "Całość to dwa polecenia:\n\n```bash\nkubectl create namespace lfs458-m01\nkubectl label namespace lfs458-m01 lfs458.io/modul=01\n```"
-    solution: |
-      ```bash
-      kubectl create namespace lfs458-m01
-      kubectl label namespace lfs458-m01 lfs458.io/modul=01
-      ```
-    checks:
-      - name: "namespace lfs458-m01 istnieje"
-        resource:
-          apiVersion: v1
-          kind: Namespace
-          name: lfs458-m01
-        assert:
-          - path: "{.status.phase}"
-            op: eq
-            value: Active
-            message: "namespace istnieje, ale nie jest w stanie Active"
-      - name: "namespace ma etykietę lfs458.io/modul=01"
-        resource:
-          apiVersion: v1
-          kind: Namespace
-          name: lfs458-m01
-        assert:
-          - path: "{.metadata.labels['lfs458\\.io/modul']}"
-            op: eq
-            value: "01"
-            message: "brak etykiety lfs458.io/modul=01 — sprawdź `kubectl get ns lfs458-m01 --show-labels`"
+      Pięć pytań o maszyny i o control plane. Każdej odpowiedzi szukasz
+      `kubectl`-em — warianty pochodzą z Twojego klastra.
+
+      > Przyda się `kubectl get nodes -o wide` i `kubectl get pods -n kube-system`.
+    quiz:
+      pytania:
+        - pytanie: |
+            Z ilu node'ów składa się ten klaster?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes \
+                --no-headers | wc -l | tr -d ' '
+          mylne: ["1", "2", "5"]
+          wskazowka: "kubectl get nodes"
+
+        - pytanie: |
+            Który node pełni rolę **control plane**?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes \
+                -l node-role.kubernetes.io/control-plane \
+                -o jsonpath='{.items[0].metadata.name}'
+          mylne_z:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes \
+                -o jsonpath='{.items[*].metadata.name}'
+          wskazowka: "kolumna ROLES w `kubectl get nodes`"
+
+        - pytanie: |
+            Jaką wersję Kubernetesa raportują node'y?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes \
+                -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}'
+          mylne: ["v1.36.0", "v1.35.4", "v1.38.1"]
+          wskazowka: "kolumna VERSION w `kubectl get nodes` — to wersja kubeleta na node'ie"
+
+        - pytanie: |
+            Jak nazywa się Pod z **serwerem API** w namespace `kube-system`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n kube-system \
+                -l component=kube-apiserver -o jsonpath='{.items[0].metadata.name}'
+          mylne_z:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n kube-system \
+                -o jsonpath='{.items[*].metadata.name}'
+          wskazowka: "kubectl get pods -n kube-system — nazwa static Poda kończy się nazwą node'a"
+
+        - pytanie: |
+            Obiekt jakiego **rodzaju** jest właścicielem (`ownerReferences`)
+            tego Poda? Odpowiedź pokazuje, czym naprawdę jest static Pod.
+          odpowiedz:
+            script: |
+              K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+              POD=$($K get pods -n kube-system -l component=kube-apiserver \
+                      -o jsonpath='{.items[0].metadata.name}')
+              $K get pod "$POD" -n kube-system \
+                -o jsonpath='{.metadata.ownerReferences[0].kind}'
+          mylne: ["ReplicaSet", "DaemonSet", "Deployment"]
+          wskazowka: |
+            kubectl get pod <nazwa> -n kube-system -o jsonpath='{.metadata.ownerReferences[0].kind}'
 
   - id: task-2
-    points: 3
-    description: |
-      **Zinwentaryzuj klaster.**
-
-      Rozejrzyj się po klastrze i zapisz wyniki w arkuszu
-      **`~/odpowiedzi/lab-01.txt`** — zwykłym pliku tekstowym, po jednej
-      parze `klucz=wartość` na linię:
-
-      | Klucz | Co ma zawierać |
-      |---|---|
-      | `liczba-nodow` | ile node'ów ma klaster |
-      | `control-plane` | nazwa node'a pełniącego rolę control plane |
-      | `wersja` | wersja Kubernetesa raportowana przez node'y (np. `v1.37.0`) |
-      | `apiserver` | nazwa Poda z serwerem API w `kube-system` |
-      | `etcd` | nazwa Poda z etcd w `kube-system` |
-      | `scheduler` | nazwa Poda ze schedulerem w `kube-system` |
-
-      > Komponenty control plane działają tu jako **static Pody** — kubelet
-      > uruchamia je z plików na node'ie, a nie na polecenie kontrolera.
-    hints:
-      - "Zacznij od `kubectl get nodes -o wide` — masz tam i liczbę node'ów, i wersję, i role."
-      - "Pody control plane są w namespace `kube-system`: `kubectl get pods -n kube-system`. Szukaj nazw zaczynających się od `kube-apiserver`, `etcd`, `kube-scheduler`."
-      - "Arkusz to zwykły plik — otwórz go edytorem albo dopisz linię poleceniem:\n\n```bash\necho 'liczba-nodow=3' >> ~/odpowiedzi/lab-01.txt\n```"
-      - "Nazwy static Podów kończą się nazwą node'a, np. `kube-apiserver-lfs458-control-plane`. Nie zgaduj — skopiuj je z `kubectl get pods -n kube-system`."
-    solution: |
-      ```bash
-      kubectl get nodes -o wide
-      kubectl get pods -n kube-system
-
-      cat > ~/odpowiedzi/lab-01.txt <<EOF
-      liczba-nodow=3
-      control-plane=lfs458-control-plane
-      wersja=$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}')
-      apiserver=kube-apiserver-lfs458-control-plane
-      etcd=etcd-lfs458-control-plane
-      scheduler=kube-scheduler-lfs458-control-plane
-      EOF
-      ```
-    checks:
-      # Arkusz zamiast ConfigMapy: kursant zapisuje odpowiedzi już w pierwszym
-      # module, a ConfigMapy omawiamy dopiero w ósmym.
-      - name: "arkusz lab-01 zawiera komplet kluczy"
-        exec:
-          timeout: 30s
-          script: |
-            BRAK=""
-            for K in liczba-nodow control-plane wersja apiserver etcd scheduler; do
-              [ -n "$("$LFS458_ROOT"/scripts/odpowiedz.sh 01 "$K")" ] || BRAK="$BRAK $K"
-            done
-            [ -z "$BRAK" ] && echo "WYNIK: komplet" || echo "WYNIK: brakuje$BRAK"
-          stdoutMatches: "WYNIK: komplet"
-      - name: "liczba node'ów zgadza się ze stanem klastra"
-        exec:
-          timeout: 30s
-          script: |
-            ILE=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes --no-headers | wc -l)
-            echo "podano=$("$LFS458_ROOT"/scripts/odpowiedz.sh 01 liczba-nodow) faktycznie=$ILE"
-          stdoutMatches: "podano=([0-9]+) faktycznie=\\1$"
-      - name: "wskazano właściwy control plane node"
-        exec:
-          timeout: 30s
-          script: |
-            CP=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes \
-                   -l node-role.kubernetes.io/control-plane -o jsonpath='{.items[0].metadata.name}')
-            [ "$("$LFS458_ROOT"/scripts/odpowiedz.sh 01 control-plane)" = "$CP" ] \
-              && echo "WYNIK: zgadza sie" || echo "WYNIK: nie zgadza sie (jest $CP)"
-          stdoutMatches: "WYNIK: zgadza sie"
-      - name: "podano wersję Kubernetesa w formacie vX.Y.Z"
-        exec:
-          timeout: 30s
-          script: |
-            W=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes \
-                  -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}')
-            echo "podano=$("$LFS458_ROOT"/scripts/odpowiedz.sh 01 wersja) faktycznie=$W"
-          stdoutMatches: "podano=(v1[.][0-9]+[.][0-9]+) faktycznie=\\1$"
-      - name: "wskazano Pody apiservera, etcd i schedulera"
-        exec:
-          timeout: 40s
-          script: |
-            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
-            ZLE=""
-            for PARA in "apiserver:kube-apiserver" "etcd:etcd" "scheduler:kube-scheduler"; do
-              KLUCZ="${PARA%%:*}"; PREFIKS="${PARA##*:}"
-              POD=$("$LFS458_ROOT"/scripts/odpowiedz.sh 01 "$KLUCZ")
-              $K get pod "$POD" -n kube-system >/dev/null 2>&1 \
-                && case "$POD" in "$PREFIKS"-*) ;; *) ZLE="$ZLE $KLUCZ" ;; esac \
-                || ZLE="$ZLE $KLUCZ"
-            done
-            [ -z "$ZLE" ] && echo "WYNIK: wszystkie trzy istnieja" || echo "WYNIK: zle$ZLE"
-          stdoutMatches: "WYNIK: wszystkie trzy istnieja"
-
-  - id: task-3
-    points: 2
+    points: 4
     description: |
       **Znajdź aplikację, której nie uruchamiałeś.**
 
       W klastrze działa namespace **`sklep-demo`**, a w nim Deployment
-      `kasa`. Nie tworzyłeś go — powstał razem ze środowiskiem tego laba.
-      Twoje zadanie: ustalić trzy rzeczy o jego Podzie i dopisać je
-      do arkusza **`~/odpowiedzi/lab-01.txt`**:
+      `kasa`. Powstał razem ze środowiskiem tego laba. Cztery pytania o niego.
 
-      | Klucz | Co ma zawierać |
-      |---|---|
-      | `pod-nazwa` | **pełna** nazwa Poda, razem z końcówką nadaną przez ReplicaSet |
-      | `pod-node` | node, na którym ten Pod działa |
-      | `pod-obraz` | obraz wraz z tagiem, z którego Pod został uruchomiony |
-
-      > Nazwy Poda nie da się zgadnąć — Deployment dokleja do niej losową
+      > Nazwy Poda nie da się zgadnąć — ReplicaSet dokleja do niej losową
       > końcówkę. To właśnie dlatego Podów nie adresuje się po nazwie,
-      > a po etykietach.
-    hints:
-      - "Pody z jednego namespace'u: `kubectl get pods -n sklep-demo`. Z całego klastra naraz: `kubectl get pods -A`."
-      - "Kolumnę z nazwą node'a dokłada flaga `-o wide`."
-      - "Obraz pokaże `kubectl describe pod <nazwa> -n sklep-demo` w sekcji kontenera — albo krócej:\n\n```bash\nkubectl get pod <nazwa> -n sklep-demo \\\n  -o jsonpath='{.spec.containers[0].image}'\n```"
-      - "Komplet jednym poleceniem:\n\n```bash\nkubectl get pods -n sklep-demo -o wide\n```"
-    solution: |
-      ```bash
-      kubectl get pods -n sklep-demo -o wide
+      > tylko po etykietach.
+    quiz:
+      pytania:
+        - pytanie: |
+            Jak dokładnie nazywa się Pod Deploymentu `kasa`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n sklep-demo \
+                -l app=kasa -o jsonpath='{.items[0].metadata.name}'
+          mylne_z:
+            script: |
+              N=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n sklep-demo \
+                    -l app=kasa -o jsonpath='{.items[0].metadata.name}')
+              BAZA="${N%-*}"
+              for _ in 1 2 3; do
+                echo "${BAZA}-$(tr -dc a-z0-9 </dev/urandom | head -c5)"
+              done
+          wskazowka: "kubectl get pods -n sklep-demo"
 
-      POD=$(kubectl get pods -n sklep-demo -l app=kasa \
-        -o jsonpath='{.items[0].metadata.name}')
+        - pytanie: |
+            Z jakiego obrazu został uruchomiony ten Pod?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n sklep-demo \
+                -l app=kasa -o jsonpath='{.items[0].spec.containers[0].image}'
+          mylne: ["nginx:1.27", "nginx:latest", "nginx:1.26-alpine"]
+          wskazowka: "kubectl get pods -n sklep-demo -o jsonpath='{.items[*].spec.containers[*].image}'"
 
-      cat >> ~/odpowiedzi/lab-01.txt <<EOF
-      pod-nazwa=$POD
-      pod-node=$(kubectl get pod "$POD" -n sklep-demo -o jsonpath='{.spec.nodeName}')
-      pod-obraz=$(kubectl get pod "$POD" -n sklep-demo -o jsonpath='{.spec.containers[0].image}')
-      EOF
-      ```
+        - pytanie: |
+            Na którym node'ie wylądował ten Pod?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n sklep-demo \
+                -l app=kasa -o jsonpath='{.items[0].spec.nodeName}'
+          mylne_z:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes \
+                -o jsonpath='{.items[*].metadata.name}'
+          wskazowka: "kolumna NODE w `kubectl get pods -n sklep-demo -o wide`"
 
-      Końcówka w nazwie Poda pochodzi od ReplicaSetu, który go utworzył —
-      dlatego po każdym wydaniu nowej wersji nazwy są inne.
-    checks:
-      - name: "podano pełną nazwę Poda aplikacji"
-        exec:
-          timeout: 40s
-          script: |
-            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
-            PRAWDZIWY=$($K get pods -n sklep-demo -l app=kasa \
-                          -o jsonpath='{.items[0].metadata.name}')
-            PODANY=$("$LFS458_ROOT"/scripts/odpowiedz.sh 01 pod-nazwa)
-            [ -n "$PODANY" ] && [ "$PODANY" = "$PRAWDZIWY" ] \
-              && echo "WYNIK: ok" \
-              || echo "WYNIK: nie zgadza sie (w klastrze jest $PRAWDZIWY)"
-          stdoutMatches: "WYNIK: ok"
-      - name: "wskazano node, na którym Pod działa"
-        exec:
-          timeout: 40s
-          script: |
-            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
-            PRAWDZIWY=$($K get pods -n sklep-demo -l app=kasa \
-                          -o jsonpath='{.items[0].spec.nodeName}')
-            [ "$("$LFS458_ROOT"/scripts/odpowiedz.sh 01 pod-node)" = "$PRAWDZIWY" ] \
-              && echo "WYNIK: ok" || echo "WYNIK: nie zgadza sie (jest $PRAWDZIWY)"
-          stdoutMatches: "WYNIK: ok"
-      - name: "podano obraz wraz z tagiem"
-        exec:
-          timeout: 40s
-          script: |
-            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
-            PRAWDZIWY=$($K get pods -n sklep-demo -l app=kasa \
-                          -o jsonpath='{.items[0].spec.containers[0].image}')
-            [ "$("$LFS458_ROOT"/scripts/odpowiedz.sh 01 pod-obraz)" = "$PRAWDZIWY" ] \
-              && echo "WYNIK: ok" || echo "WYNIK: nie zgadza sie (jest $PRAWDZIWY)"
-          stdoutMatches: "WYNIK: ok"
+        - pytanie: |
+            Ile ReplicaSetów stoi w tej chwili między Deploymentem `kasa`
+            a jego Podem?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get rs -n sklep-demo \
+                --no-headers 2>/dev/null | wc -l | tr -d ' '
+          mylne: ["0", "2", "3"]
+          wskazowka: "kubectl get rs -n sklep-demo"
 
-  - id: task-4
+  - id: task-3
     points: 4
     description: |
-      **Zobacz pętlę sterowania na żywo.**
+      **Zobacz reconciliation loop na żywo.**
 
-      Uruchom w namespace `lfs458-m01` Deployment o nazwie `petla`:
+      W namespace `lfs458-m01` działa Deployment `petla` — **2 repliki**
+      `nginx:1.27-alpine`. Nikt nie pilnuje go ręcznie.
 
-      - obraz `nginx:1.27-alpine`
-      - **2 repliki**
-
-      Gdy oba Pody będą gotowe, **usuń ręcznie jeden z nich** i obserwuj,
-      co się stanie:
+      1. Zobacz, co działa: `kubectl get pods -n lfs458-m01 -o wide`
+      2. **Usuń jeden z Podów** i patrz, co się stanie:
 
       ```bash
+      kubectl delete pod -n lfs458-m01 <nazwa-poda>
       kubectl get pods -n lfs458-m01 -w
       ```
 
-      Zadanie jest zaliczone, gdy po Twojej interwencji **stan faktyczny znów
-      zgadza się ze stanem docelowym** — czyli gdy kontroler zdążył odtworzyć
-      to, co zniknęło.
+      Zadanie jest zaliczone, gdy stan faktyczny **znów zgadza się**
+      ze stanem docelowym — czyli gdy kontroler odtworzył to, co zniknęło.
 
-      > Sprawdzenie porównuje `status.readyReplicas` z `spec.replicas`, więc
-      > przetrwa też zadanie dodatkowe, w którym przeskalujesz ten Deployment.
+      > Przyjrzyj się nazwie nowego Poda. Środkowy człon — hash ReplicaSetu —
+      > jest ten sam. Odtworzeniem zajął się **ten sam ReplicaSet**,
+      > a nie Deployment.
     hints:
-      - "Deployment tworzysz jednym poleceniem: `kubectl create deployment <nazwa> --image=<obraz> --replicas=<n> -n <namespace>`."
-      - "Po usunięciu Poda (`kubectl delete pod <nazwa> -n lfs458-m01`) nowy powstanie w kilka sekund. Jeśli check jest czerwony, poczekaj chwilę — Pod może być jeszcze w stanie ContainerCreating."
-      - "Zwróć uwagę na nazwę nowego Poda: środkowy człon to hash ReplicaSetu i się nie zmienia. To ten sam ReplicaSet odtworzył Poda, nie Deployment."
-      - "Komplet:\n\n```bash\nkubectl create deployment petla --image=nginx:1.27-alpine --replicas=2 -n lfs458-m01\nkubectl rollout status deployment/petla -n lfs458-m01\nkubectl delete pod -n lfs458-m01 $(kubectl get pods -n lfs458-m01 -l app=petla -o jsonpath='{.items[0].metadata.name}')\n```"
+      - "Nazwy Podów: `kubectl get pods -n lfs458-m01`. Usuwasz dowolny z dwóch."
+      - "Nowy Pod wstaje w kilka sekund. Jeśli check jest czerwony, odczekaj chwilę — Pod może być jeszcze w stanie `ContainerCreating`."
+      - "Podgląd na żywo przerywasz Ctrl+C: `kubectl get pods -n lfs458-m01 -w`."
+      - "Komplet:\n\n```bash\nPOD=$(kubectl get pods -n lfs458-m01 -l app=petla -o jsonpath='{.items[0].metadata.name}')\nkubectl delete pod \"$POD\" -n lfs458-m01\nkubectl get pods -n lfs458-m01\n```"
     solution: |
       ```bash
-      kubectl create deployment petla --image=nginx:1.27-alpine --replicas=2 -n lfs458-m01
-      kubectl rollout status deployment/petla -n lfs458-m01
+      kubectl get pods -n lfs458-m01 -o wide
 
-      # usuń jeden Pod i obserwuj, jak wraca
-      POD=$(kubectl get pods -n lfs458-m01 -l app=petla -o jsonpath='{.items[0].metadata.name}')
+      POD=$(kubectl get pods -n lfs458-m01 -l app=petla \
+        -o jsonpath='{.items[0].metadata.name}')
       kubectl delete pod "$POD" -n lfs458-m01
-      kubectl get pods -n lfs458-m01 -w
+
+      kubectl get pods -n lfs458-m01 -w   # Ctrl+C, gdy znów będą dwa Ready
       ```
 
       Kolejność zdarzeń: `replicaset-controller` zauważa, że ma 1 Pod zamiast 2,
       tworzy nowy obiekt Pod bez `nodeName`; scheduler przypisuje mu node;
       kubelet na tym node'ie uruchamia kontener.
     checks:
-      - name: "Deployment petla istnieje i ma co najmniej 2 repliki"
-        resource:
-          apiVersion: apps/v1
-          kind: Deployment
-          namespace: lfs458-m01
-          name: petla
-        assert:
-          - path: "{.spec.replicas}"
-            op: gte
-            value: 2
-            message: "Deployment ma mieć co najmniej 2 repliki (w zadaniu: dokładnie 2)"
-      - name: "używa obrazu nginx:1.27-alpine"
-        resource:
-          apiVersion: apps/v1
-          kind: Deployment
-          namespace: lfs458-m01
-          name: petla
-        assert:
-          - path: "{.spec.template.spec.containers[*].image}"
-            op: eq
-            value: "nginx:1.27-alpine"
-            message: "sprawdź obraz: `kubectl get deploy petla -n lfs458-m01 -o jsonpath='{.spec.template.spec.containers[*].image}'`"
       - name: "stan faktyczny dogonił docelowy (readyReplicas = spec.replicas)"
         resource:
           apiVersion: apps/v1
@@ -340,18 +240,6 @@ tasks:
             op: eq
             valuePath: "{.spec.replicas}"
             message: "nie wszystkie repliki są Ready — poczekaj chwilę (`kubectl get pods -n lfs458-m01`) i sprawdź ponownie"
-      - name: "Deployment utworzył ReplicaSet"
-        resource:
-          apiVersion: apps/v1
-          kind: ReplicaSet
-          namespace: lfs458-m01
-          labelSelector: "app=petla"
-        assert:
-          - path: "{.items[*].metadata.name}"
-            count:
-              op: gte
-              value: 1
-            message: "między Deploymentem a Podami zawsze stoi ReplicaSet — `kubectl get rs -n lfs458-m01`"
       - name: "działają co najmniej 2 Pody, wszystkie w stanie Running"
         resource:
           apiVersion: v1
@@ -367,28 +255,71 @@ tasks:
               op: gte
               value: 2
             message: "mają działać minimum 2 Pody i wszystkie w stanie Running"
+      - name: "odtworzeniem zajął się ten sam ReplicaSet"
+        resource:
+          apiVersion: apps/v1
+          kind: ReplicaSet
+          namespace: lfs458-m01
+          labelSelector: "app=petla"
+        assert:
+          - path: "{.items[*].metadata.name}"
+            count:
+              op: eq
+              value: 1
+            message: "między Deploymentem a Podami zawsze stoi ReplicaSet — tu ma być dokładnie jeden (`kubectl get rs -n lfs458-m01`)"
+      # Dwa niezależne ślady po usunięciu Poda: młodszy Pod niż jego ReplicaSet
+      # albo trzecie zdarzenie SuccessfulCreate. Zdarzenia wygasają po godzinie,
+      # znaczniki czasu nie — razem check nie zapala się na czerwono komuś,
+      # kto zadanie zrobił, tylko wrócił do niego później.
+      - name: "widać ślad odtworzenia Poda"
+        exec:
+          timeout: 40s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            RS=$($K get rs -n lfs458-m01 -l app=petla \
+                   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            if [ -z "$RS" ]; then echo "WYNIK: brak ReplicaSetu petla"; exit 0; fi
+            RS_T=$($K get rs "$RS" -n lfs458-m01 -o jsonpath='{.metadata.creationTimestamp}')
+            POD_T=$($K get pods -n lfs458-m01 -l app=petla \
+                      -o jsonpath='{.items[*].metadata.creationTimestamp}' \
+                      | tr ' ' '\n' | sort | tail -1)
+            ROZNICA=$(( $(date -d "$POD_T" +%s) - $(date -d "$RS_T" +%s) ))
+            ILE=$($K get events -n lfs458-m01 --field-selector reason=SuccessfulCreate \
+                    -o jsonpath='{.items[*].message}' 2>/dev/null \
+                    | tr ' ' '\n' | grep -c "^${RS}-" 2>/dev/null)
+            if [ "$ROZNICA" -ge 5 ] || [ "${ILE:-0}" -ge 3 ]; then
+              echo "WYNIK: widac odtworzenie"
+            else
+              echo "WYNIK: wszystkie Pody sa z pierwszego rozruchu — usun jeden i poczekaj"
+            fi
+          stdoutMatches: "WYNIK: widac odtworzenie"
 
-  - id: task-5
+  - id: task-4
     points: 2
     optional: true
     description: |
-      **Skaluj i zanotuj obserwację.** *(zadanie dodatkowe — dla tych, którzy
+      **Zmień stan docelowy.** *(zadanie dodatkowe — dla tych, którzy
       skończyli wcześniej)*
 
-      1. Przeskaluj Deployment `petla` do **4 replik**.
-      2. Sprawdź, na których node'ach wylądowały nowe Pody.
-      3. Dodaj Deploymentowi adnotację `lfs458.io/obserwacja` i wpisz w niej
-         własnymi słowami, **który komponent** zdecydował o wyborze node'a.
-    hints:
-      - "Skalowanie: `kubectl scale deployment petla -n lfs458-m01 --replicas=4`."
-      - "Rozmieszczenie zobaczysz w `kubectl get pods -n lfs458-m01 -o wide`, kolumna NODE."
-      - "Adnotację dodaje się jak etykietę: `kubectl annotate deployment petla -n lfs458-m01 lfs458.io/obserwacja='...'`."
-    solution: |
+      Nie tworzysz nic nowego — mówisz klastrowi, że chcesz **4 repliki**
+      zamiast dwóch, i patrzysz, jak sam dochodzi do tego stanu:
+
       ```bash
       kubectl scale deployment petla -n lfs458-m01 --replicas=4
       kubectl get pods -n lfs458-m01 -o wide
-      kubectl annotate deployment petla -n lfs458-m01 \
-        lfs458.io/obserwacja='node wybral kube-scheduler, kubelet tylko uruchomil kontener'
+      ```
+
+      Zwróć uwagę, na których node'ach wylądowały nowe Pody. Node wybrał
+      **kube-scheduler** — kubelet tylko uruchomił kontenery.
+    hints:
+      - "Skalowanie to jedno polecenie: `kubectl scale deployment petla -n lfs458-m01 --replicas=4`."
+      - "Rozmieszczenie zobaczysz w kolumnie NODE: `kubectl get pods -n lfs458-m01 -o wide`."
+      - "Jeśli check jest czerwony, poczekaj, aż nowe Pody będą Ready: `kubectl rollout status deployment/petla -n lfs458-m01`."
+    solution: |
+      ```bash
+      kubectl scale deployment petla -n lfs458-m01 --replicas=4
+      kubectl rollout status deployment/petla -n lfs458-m01
+      kubectl get pods -n lfs458-m01 -o wide
       ```
     checks:
       - name: "Deployment ma 4 gotowe repliki"
@@ -402,84 +333,18 @@ tasks:
             op: eq
             value: 4
             message: "przeskaluj do 4 replik i poczekaj, aż wszystkie będą Ready"
-      - name: "Deployment ma adnotację lfs458.io/obserwacja"
+      - name: "działają 4 Pody w stanie Running"
         resource:
-          apiVersion: apps/v1
-          kind: Deployment
+          apiVersion: v1
+          kind: Pod
           namespace: lfs458-m01
-          name: petla
+          labelSelector: "app=petla"
         assert:
-          - path: "{.metadata.annotations['lfs458\\.io/obserwacja']}"
-            op: exists
-            message: "dodaj adnotację `lfs458.io/obserwacja` z własnym komentarzem"
-
-  # Zadanie quizowe: nie buduje się tu niczego — trzeba ODCZYTAĆ klaster.
-  # Poprawne odpowiedzi wyliczamy z żywego klastra, więc nie zdezaktualizują
-  # się przy losowym sufiksie Poda ani przy zmianie wersji obrazu.
-  - id: task-6
-    points: 2
-    description: |
-      **Odczytaj klaster, zamiast go budować.**
-
-      Lab utworzył w osobnym namespace kilka obiektów. Odpowiedz na cztery
-      pytania o nie — każdej odpowiedzi szukasz `kubectl`-em, bo warianty
-      pochodzą z Twojego klastra i nie da się ich zgadnąć.
-    quiz:
-      przygotuj:
-        timeout: 3m
-        script: |
-          K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
-          $K create namespace lfs458-m01-quiz --dry-run=client -o yaml | $K apply -f - >/dev/null
-          $K create deployment inwentaryzacja --image=nginx:1.26-alpine \
-            -n lfs458-m01-quiz --dry-run=client -o yaml | $K apply -f - >/dev/null
-          $K rollout status deployment/inwentaryzacja -n lfs458-m01-quiz --timeout=120s >/dev/null
-      pytania:
-        - pytanie: |
-            W namespace **`lfs458-m01-quiz`** działa jeden Pod.
-            Jak dokładnie się nazywa?
-          odpowiedz:
-            script: |
-              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n lfs458-m01-quiz \
-                -o jsonpath='{.items[0].metadata.name}'
-          mylne_z:
-            script: |
-              N=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n lfs458-m01-quiz \
-                    -o jsonpath='{.items[0].metadata.name}')
-              BAZA="${N%-*}"
-              for _ in 1 2 3; do
-                echo "${BAZA}-$(tr -dc a-z0-9 </dev/urandom | head -c5)"
-              done
-          wskazowka: "kubectl get pods -n lfs458-m01-quiz"
-
-        - pytanie: |
-            Z jakiego obrazu korzysta ten Pod?
-          odpowiedz:
-            script: |
-              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n lfs458-m01-quiz \
-                -o jsonpath='{.items[0].spec.containers[0].image}'
-          mylne:
-            - "nginx:1.27-alpine"
-            - "nginx:latest"
-            - "nginx:1.26"
-          wskazowka: "kubectl get pods -n lfs458-m01-quiz -o jsonpath='{.items[*].spec.containers[*].image}'"
-
-        - pytanie: |
-            Na którym node'ie wylądował ten Pod?
-          odpowiedz:
-            script: |
-              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n lfs458-m01-quiz \
-                -o jsonpath='{.items[0].spec.nodeName}'
-          mylne_z:
-            script: |
-              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes \
-                -o jsonpath='{.items[*].metadata.name}'
-          wskazowka: "kolumna NODE w `kubectl get pods -n lfs458-m01-quiz -o wide`"
-
-        - pytanie: |
-            Ile ReplicaSetów ma w tej chwili Deployment `inwentaryzacja`?
-          odpowiedz:
-            script: |
-              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get rs -n lfs458-m01-quiz \
-                --no-headers 2>/dev/null | wc -l | tr -d ' '
-          mylne: ["0", "2", "3"]
-          wskazowka: "kubectl get rs -n lfs458-m01-quiz"
+          - path: "{.items[*].status.phase}"
+            op: eq
+            value: Running
+            quantifier: all
+            count:
+              op: eq
+              value: 4
+            message: "ma działać dokładnie 4 Pody i wszystkie w stanie Running"

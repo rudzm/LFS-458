@@ -820,10 +820,11 @@ def przeprowadz_quiz(num: str, t: dict, env: dict) -> bool:
                 print(C.green("  ✓ dobrze"))
                 print()
                 break
-            print(C.red(f"  ✗ nie — poprawna odpowiedź to: {poprawna}"))
-            if pytanie.get("wskazowka"):
-                print(C.dim(f"    sprawdzisz to tak: {pytanie['wskazowka']}"))
-            print(C.dim("    spróbuj jeszcze raz, żeby to utrwalić"))
+            # Bez zdradzania poprawnej odpowiedzi: kursant ma do niej dojść sam,
+            # sprawdzając w klastrze albo prosząc o podpowiedź pod `?`.
+            print(C.red("  ✗ nie"))
+            print(C.dim("    sprawdź w klastrze i spróbuj jeszcze raz"
+                        + (" — podpowiedź pod ?" if pytanie.get("wskazowka") else "")))
             print()
     return True
 
