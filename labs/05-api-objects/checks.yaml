@@ -1,0 +1,363 @@
+module: "05"
+title: "API Objects — katalog obiektów i uprawnienia"
+chapter: 5
+chapterTitle: "API Objects"
+day: 2
+environment: kind-basic
+
+intro: |
+  Najpierw katalog API, potem RBAC. Druga część jest ważniejsza: zbudujesz
+  ServiceAccount dla workloadu, nadasz mu **minimalny** zestaw uprawnień
+  i sprawdzisz, że reszty naprawdę nie może.
+
+  Kluczowe narzędzie tego laba:
+
+  ```bash
+  kubectl auth can-i --list --as=system:serviceaccount:lfs458-m05:czytelnik -n lfs458-m05
+  ```
+
+cleanup:
+  - name: "Usuwam namespace lfs458-m05"
+    timeout: 3m
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m05 --ignore-not-found --wait=true
+  - name: "Usuwam obiekty klastrowe modułu"
+    timeout: 2m
+    ignoreError: true
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      $K delete clusterrolebinding czytelnik-nody --ignore-not-found
+      $K delete clusterrole nody-podglad --ignore-not-found
+
+tasks:
+  # Zadanie quizowe. `przygotuj` tworzy namespace modułu, bo korzystają z niego
+  # kolejne zadania — wcześniej robiło to zadanie 1 przy okazji ConfigMapy.
+  - id: task-1
+    points: 3
+    description: |
+      **Zbadaj katalog API klastra.**
+
+      Pięć pytań o to, gdzie co mieszka w API. Ostatnie jest podchwytliwe
+      i odpowiada za sporą część niedziałających reguł RBAC na świecie.
+
+      ```bash
+      kubectl api-resources | grep -E 'jobs|^roles|networkpolicies'
+      kubectl describe clusterrole view | head -5
+      ```
+    quiz:
+      przygotuj:
+        timeout: 2m
+        script: |
+          K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+          $K create namespace lfs458-m05 --dry-run=client -o yaml | $K apply -f - >/dev/null
+      pytania:
+        - pytanie: |
+            Jaki `apiVersion` ma zasób `Job`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" api-resources \
+                | awk '$1=="jobs" {print $(NF-2)}'
+          mylne: ["batch/v1beta1", "apps/v1", "v1"]
+          wskazowka: "kubectl api-resources | grep jobs"
+
+        - pytanie: |
+            Jaki `apiVersion` ma zasób `Role`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" api-resources \
+                | awk '$1=="roles" {print $(NF-2)}'
+          mylne: ["rbac.authorization.k8s.io/v1beta1", "authorization.k8s.io/v1", "v1"]
+          wskazowka: "kubectl api-resources | grep -E '^roles'"
+
+        - pytanie: |
+            Czy `PersistentVolume` jest zasobem namespace'owanym?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" api-resources \
+                | awk '$1=="persistentvolumes" {print $(NF-1)}'
+          mylne: ["true"]
+          wskazowka: "porównaj z PVC: `kubectl api-resources | grep persistentvolume`"
+
+        - pytanie: |
+            Ile zasobów ma w swojej nazwie grupę `rbac.authorization.k8s.io`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" api-resources \
+                --api-group=rbac.authorization.k8s.io --no-headers | wc -l | tr -d ' '
+          mylne: ["2", "6", "8"]
+          wskazowka: "kubectl api-resources --api-group=rbac.authorization.k8s.io"
+
+        - pytanie: |
+            Jak w regule RBAC zapisuje się **grupę rdzeniową** (Pod, Service, ConfigMap)?
+          odpowiedz:
+            script: |
+              echo '""'
+          mylne: ['"v1"', '"core"', '"api"']
+          wskazowka: "kubectl describe clusterrole view | head -5 — spójrz na kolumnę Resources i API Groups"
+
+  - id: task-2
+    points: 4
+    description: |
+      **Zbuduj ServiceAccount i nadaj mu minimalne uprawnienia.**
+
+      W namespace `lfs458-m05` utwórz:
+
+      1. ServiceAccount **`czytelnik`**
+      2. Role **`podglad-podow`** pozwalającą **wyłącznie** na `get`, `list`
+         i `watch` zasobu `pods`
+      3. RoleBinding **`czytelnik-podglad`** łączący jedno z drugim
+
+      Nic więcej. Żadnego `deployments`, żadnego `*`, żadnego `create`.
+    hints:
+      - "Wszystkie trzy obiekty da się utworzyć imperatywnie: `kubectl create serviceaccount`, `kubectl create role`, `kubectl create rolebinding`."
+      - "`kubectl create role podglad-podow --verb=get,list,watch --resource=pods -n lfs458-m05`"
+      - "RoleBinding do ServiceAccountu wymaga pełnej nazwy z namespace: `--serviceaccount=lfs458-m05:czytelnik`."
+      - "Komplet:\n\n```bash\nkubectl create serviceaccount czytelnik -n lfs458-m05\nkubectl create role podglad-podow --verb=get,list,watch --resource=pods -n lfs458-m05\nkubectl create rolebinding czytelnik-podglad \\\n  --role=podglad-podow --serviceaccount=lfs458-m05:czytelnik -n lfs458-m05\n```"
+    solution: |
+      ```bash
+      kubectl create serviceaccount czytelnik -n lfs458-m05
+      kubectl create role podglad-podow \
+        --verb=get,list,watch --resource=pods -n lfs458-m05
+      kubectl create rolebinding czytelnik-podglad \
+        --role=podglad-podow --serviceaccount=lfs458-m05:czytelnik -n lfs458-m05
+      ```
+    checks:
+      - name: "ServiceAccount czytelnik istnieje"
+        resource:
+          apiVersion: v1
+          kind: ServiceAccount
+          namespace: lfs458-m05
+          name: czytelnik
+        assert:
+          - path: "{.metadata.name}"
+            op: eq
+            value: czytelnik
+      - name: "Role podglad-podow pozwala czytać Pody i nic ponadto"
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          namespace: lfs458-m05
+          name: podglad-podow
+        assert:
+          - path: "{.rules[*].resources[*]}"
+            op: matches
+            value: "^pods"
+            quantifier: all
+            message: "reguła ma dotyczyć wyłącznie zasobu pods (i jego podzasobów)"
+          - path: "{.rules[*].verbs[*]}"
+            op: oneOf
+            value: "get, list, watch"
+            quantifier: all
+            message: "tylko czasowniki odczytu: get, list, watch"
+      - name: "RoleBinding łączy ServiceAccount z Role"
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          namespace: lfs458-m05
+          name: czytelnik-podglad
+        assert:
+          - path: "{.roleRef.kind}"
+            op: eq
+            value: Role
+          - path: "{.roleRef.name}"
+            op: eq
+            value: podglad-podow
+          - path: "{.subjects[*].name}"
+            op: eq
+            value: czytelnik
+            message: "podmiotem ma być ServiceAccount `czytelnik`"
+          - path: "{.subjects[*].namespace}"
+            op: eq
+            value: lfs458-m05
+            message: "ServiceAccount w `subjects` zawsze wymaga pola namespace"
+
+  - id: task-3
+    points: 3
+    description: |
+      **Wyznacz granicę uprawnień i sprawdź ją.**
+
+      Rozszerz Role `podglad-podow` o możliwość czytania **logów** Podów
+      (podzasób `pods/log`). Nic więcej nie dokładaj.
+
+      Potem sprawdź granice — wszystkie trzy odpowiedzi mają być prawdziwe:
+
+      ```bash
+      SA=system:serviceaccount:lfs458-m05:czytelnik
+      kubectl auth can-i get pods       --as=$SA -n lfs458-m05   # yes
+      kubectl auth can-i get pods/log   --as=$SA -n lfs458-m05   # yes
+      kubectl auth can-i delete pods    --as=$SA -n lfs458-m05   # no
+      kubectl auth can-i get secrets    --as=$SA -n lfs458-m05   # no
+      ```
+    hints:
+      - "Podzasoby wymienia się w regule osobno, obok zasobu głównego: `resources: [\"pods\", \"pods/log\"]`."
+      - "Najprościej odtworzyć rolę: `kubectl create role podglad-podow --verb=get,list,watch --resource=pods,pods/log -n lfs458-m05 --dry-run=client -o yaml | kubectl apply -f -`."
+      - "Jeśli `can-i` odpowiada `no` na `get pods/log`, sprawdź, czy w regule naprawdę stoi `pods/log`, a nie `podslog` albo `logs`."
+    solution: |
+      ```bash
+      kubectl create role podglad-podow \
+        --verb=get,list,watch --resource=pods,pods/log -n lfs458-m05 \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      SA=system:serviceaccount:lfs458-m05:czytelnik
+      kubectl auth can-i --list --as=$SA -n lfs458-m05
+      ```
+    checks:
+      - name: "Role obejmuje podzasób pods/log"
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          namespace: lfs458-m05
+          name: podglad-podow
+        assert:
+          - path: "{.rules[*].resources[*]}"
+            op: eq
+            value: "pods/log"
+            quantifier: any
+            message: "dodaj `pods/log` do listy resources — podzasoby wymienia się osobno"
+      - name: "ServiceAccount może czytać Pody i ich logi"
+        exec:
+          timeout: 40s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            SA=system:serviceaccount:lfs458-m05:czytelnik
+            a=$($K auth can-i get pods     --as=$SA -n lfs458-m05)
+            b=$($K auth can-i get pods/log --as=$SA -n lfs458-m05)
+            echo "pods=$a log=$b"
+          stdoutMatches: "pods=yes log=yes"
+      - name: "ServiceAccount NIE może usuwać Podów ani czytać Secretów"
+        exec:
+          timeout: 40s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            SA=system:serviceaccount:lfs458-m05:czytelnik
+            a=$($K auth can-i delete pods  --as=$SA -n lfs458-m05)
+            b=$($K auth can-i get secrets  --as=$SA -n lfs458-m05)
+            echo "delete=$a secrets=$b"
+          stdoutMatches: "delete=no secrets=no"
+
+  - id: task-4
+    points: 3
+    description: |
+      **Rozszerz zakres poza namespace.**
+
+      Node'y są zasobem **klastrowym**, więc `Role` ich nie obejmie —
+      niezależnie od tego, co w niej napiszesz.
+
+      Utwórz:
+
+      1. ClusterRole **`nody-podglad`** z prawem `get` i `list` na `nodes`
+      2. ClusterRoleBinding **`czytelnik-nody`** wiążący ją z ServiceAccountem
+         `czytelnik` z namespace `lfs458-m05`
+
+      Sprawdź efekt:
+
+      ```bash
+      kubectl auth can-i list nodes \
+        --as=system:serviceaccount:lfs458-m05:czytelnik
+      ```
+    hints:
+      - "`kubectl create clusterrole nody-podglad --verb=get,list --resource=nodes`"
+      - "`kubectl create clusterrolebinding czytelnik-nody --clusterrole=nody-podglad --serviceaccount=lfs458-m05:czytelnik`"
+      - "Przy sprawdzaniu uprawnień do zasobu klastrowego **nie podawaj** `-n` — namespace nic tu nie znaczy."
+    solution: |
+      ```bash
+      kubectl create clusterrole nody-podglad --verb=get,list --resource=nodes
+      kubectl create clusterrolebinding czytelnik-nody \
+        --clusterrole=nody-podglad --serviceaccount=lfs458-m05:czytelnik
+
+      kubectl auth can-i list nodes --as=system:serviceaccount:lfs458-m05:czytelnik
+      ```
+    checks:
+      - name: "ClusterRole nody-podglad pozwala czytać node'y"
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          name: nody-podglad
+        assert:
+          - path: "{.rules[*].resources[*]}"
+            op: eq
+            value: nodes
+            quantifier: any
+          - path: "{.rules[*].verbs[*]}"
+            op: oneOf
+            value: "get, list"
+            quantifier: all
+            message: "tylko get i list — nie dokładaj czasowników zapisu"
+      - name: "ClusterRoleBinding wiąże ją z ServiceAccountem czytelnik"
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          name: czytelnik-nody
+        assert:
+          - path: "{.roleRef.name}"
+            op: eq
+            value: nody-podglad
+          - path: "{.subjects[*].namespace}"
+            op: eq
+            value: lfs458-m05
+            message: "ServiceAccount trzeba wskazać razem z jego namespace"
+      - name: "ServiceAccount faktycznie może listować node'y"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" auth can-i list nodes \
+              --as=system:serviceaccount:lfs458-m05:czytelnik
+          stdoutMatches: "^yes"
+
+  - id: task-5
+    points: 3
+    optional: true
+    description: |
+      **Użyj wbudowanej roli bez kopiowania jej.**
+
+      Zadanie dodatkowe pokazujące najczęstszy wzorzec RBAC w praktyce:
+      `RoleBinding` **wskazujący na `ClusterRole`**. Uprawnienia obowiązują
+      wtedy tylko w namespace bindingu.
+
+      1. Utwórz ServiceAccount `gosc` w `lfs458-m05`
+      2. Zwiąż go z **wbudowanym** ClusterRole `view` przez RoleBinding
+         o nazwie `gosc-view` — **w namespace `lfs458-m05`**
+      3. Sprawdź, czego `view` nie daje:
+
+      ```bash
+      SA=system:serviceaccount:lfs458-m05:gosc
+      kubectl auth can-i list pods    --as=$SA -n lfs458-m05   # yes
+      kubectl auth can-i get secrets  --as=$SA -n lfs458-m05   # no
+      kubectl auth can-i list pods    --as=$SA -n default      # no
+      ```
+    hints:
+      - "`kubectl create rolebinding` przyjmuje `--clusterrole` zamiast `--role`. To właśnie ten wzorzec."
+      - "`kubectl create rolebinding gosc-view --clusterrole=view --serviceaccount=lfs458-m05:gosc -n lfs458-m05`"
+      - "Zwróć uwagę na trzecie sprawdzenie: ta sama ClusterRole, ale binding jest w jednym namespace — więc w `default` uprawnień nie ma."
+    solution: |
+      ```bash
+      kubectl create serviceaccount gosc -n lfs458-m05
+      kubectl create rolebinding gosc-view \
+        --clusterrole=view --serviceaccount=lfs458-m05:gosc -n lfs458-m05
+      ```
+    checks:
+      - name: "RoleBinding gosc-view wskazuje na ClusterRole view"
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          namespace: lfs458-m05
+          name: gosc-view
+        assert:
+          - path: "{.roleRef.kind}"
+            op: eq
+            value: ClusterRole
+            message: "to ma być RoleBinding wskazujący na ClusterRole, a nie kopia roli"
+          - path: "{.roleRef.name}"
+            op: eq
+            value: view
+      - name: "gosc widzi Pody w lfs458-m05, ale nie w default i nie Secrety"
+        exec:
+          timeout: 40s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            SA=system:serviceaccount:lfs458-m05:gosc
+            a=$($K auth can-i list pods   --as=$SA -n lfs458-m05)
+            b=$($K auth can-i get secrets --as=$SA -n lfs458-m05)
+            c=$($K auth can-i list pods   --as=$SA -n default)
+            echo "tu=$a secrets=$b gdzie-indziej=$c"
+          stdoutMatches: "tu=yes secrets=no gdzie-indziej=no"

@@ -1,0 +1,770 @@
+module: "12"
+apiBywaNiedostepne: true
+title: "Logging and Troubleshooting — napraw to, co zepsute"
+chapter: 12
+chapterTitle: "Logging and Troubleshooting"
+day: 3
+environment: kind-basic
+
+intro: |
+  Ten lab działa odwrotnie niż pozostałe. **Nie budujesz — naprawiasz.**
+
+  **`labctl setup 12`** wdraża do namespace `lfs458-m12` cztery
+  rzeczy, z których **każda jest zepsuta w inny sposób**. Twoim zadaniem jest
+  znaleźć przyczynę i usunąć ją.
+
+  Trzymaj się kolejności z wykładu i nie zgaduj:
+
+  ```bash
+  kubectl get pods -n lfs458-m12 -o wide
+  kubectl describe pod <nazwa> -n lfs458-m12 | sed -n '/Events/,$p'
+  kubectl logs <nazwa> -n lfs458-m12 --previous
+  ```
+
+  > Ponowne `labctl setup 12` **psuje wszystko od nowa** —
+  > przydaje się, gdy chcesz przećwiczyć lab drugi raz.
+
+# Ten setup celowo tworzy zepsute obiekty. Każdy z nich ilustruje inną klasę
+# awarii, którą kursant ma rozpoznać po objawach, a nie po treści manifestu.
+setup:
+  - name: "Tworzę namespace modułu"
+    timeout: 3m
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      $K create namespace lfs458-m12 --dry-run=client -o yaml | $K apply -f -
+  - name: "Psuję rzecz pierwszą: nieistniejący obraz"
+    timeout: 3m
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      cat <<'YAML' | $K apply -f -
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: obrazek
+        namespace: lfs458-m12
+      spec:
+        replicas: 1
+        selector: {matchLabels: {app: obrazek}}
+        template:
+          metadata: {labels: {app: obrazek}}
+          spec:
+            containers:
+              - name: web
+                image: nginx:9.9.9-nie-ma-takiej-wersji
+      YAML
+  - name: "Psuję rzecz drugą: aplikacja padająca przy starcie"
+    timeout: 3m
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      cat <<'YAML' | $K apply -f -
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: padajacy
+        namespace: lfs458-m12
+      spec:
+        replicas: 1
+        selector: {matchLabels: {app: padajacy}}
+        template:
+          metadata: {labels: {app: padajacy}}
+          spec:
+            containers:
+              - name: app
+                image: busybox:1.36
+                command: ["sh","-c","echo 'BLAD: brak zmiennej TRYB, koncze prace'; exit 1"]
+      YAML
+  - name: "Psuję rzecz trzecią: Service bez backendów"
+    timeout: 3m
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      cat <<'YAML' | $K apply -f -
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: sklep
+        namespace: lfs458-m12
+      spec:
+        replicas: 2
+        selector: {matchLabels: {app: sklep}}
+        template:
+          metadata: {labels: {app: sklep}}
+          spec:
+            containers:
+              - name: web
+                image: nginx:1.27-alpine
+                ports: [{containerPort: 80}]
+      ---
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: sklep
+        namespace: lfs458-m12
+      spec:
+        selector:
+          app: sklepik
+        ports:
+          - port: 80
+            targetPort: 80
+      YAML
+  - name: "Psuję rzecz czwartą: Pod nie do zaplanowania"
+    timeout: 3m
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      cat <<'YAML' | $K apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: czekajacy
+        namespace: lfs458-m12
+      spec:
+        nodeSelector:
+          sprzet: kwantowy
+        containers:
+          - name: web
+            image: nginx:1.27-alpine
+      YAML
+      echo
+      echo "Cztery rzeczy są zepsute. Powodzenia."
+      $K get pods,svc -n lfs458-m12
+
+cleanup:
+  - name: "Usuwam arkusz odpowiedzi"
+    timeout: 30s
+    ignoreError: true
+    script: |
+      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-12.txt"
+      echo "arkusz usunięty"
+  - name: "Przywracam control plane i kubelet, gdyby coś zostało zepsute"
+    timeout: 5m
+    ignoreError: true
+    script: |
+      CRI="${CONTAINER_CLI:-docker}"
+      W=lfs458-control-plane
+      for para in "apiserver.oryginal:kube-apiserver.yaml" "scheduler.oryginal:kube-scheduler.yaml"; do
+        KOPIA="/etc/kubernetes/${para%%:*}"
+        MANIFEST="/etc/kubernetes/manifests/${para##*:}"
+        if "$CRI" exec "$W" test -f "$KOPIA" 2>/dev/null; then
+          "$CRI" exec "$W" cp "$KOPIA" "$MANIFEST" 2>/dev/null || true
+          "$CRI" exec "$W" rm -f "$KOPIA" 2>/dev/null || true
+        fi
+      done
+      "$CRI" exec lfs458-worker2 systemctl start kubelet 2>/dev/null || true
+      # Dalsze kroki sprzątania potrzebują API, a kubelet podnosi podmieniony
+      # manifest dopiero po kilkunastu sekundach — bez tej pętli usuwanie
+      # namespace'ów trafiało w martwy apiserver.
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      for _ in $(seq 1 60); do
+        $K get --raw /healthz >/dev/null 2>&1 && break
+        sleep 2
+      done
+      echo "control plane i kubelet przywrócone"
+  - name: "Usuwam namespace lfs458-m12"
+    timeout: 3m
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m12 --ignore-not-found --wait=true
+  - name: "Usuwam namespace zadania quizowego"
+    timeout: 5m
+    ignoreError: true
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m12-quiz \
+        --ignore-not-found --wait=true
+
+tasks:
+  - id: task-1
+    points: 3
+    description: |
+      **Deployment `obrazek` nie wstaje.**
+
+      Zdiagnozuj i napraw. Po naprawie Deployment ma mieć **1 gotową replikę**
+      i używać obrazu **`nginx:1.27-alpine`**.
+
+      Zacznij od:
+
+      ```bash
+      kubectl get pods -n lfs458-m12
+      kubectl describe pod -n lfs458-m12 -l app=obrazek | sed -n '/Events/,$p'
+      ```
+    hints:
+      - "Nie zaglądaj od razu do manifestu. Najpierw przeczytaj stan Poda w `kubectl get pods` — nazwa stanu sama nazywa problem."
+      - "Stan `ImagePullBackOff` albo `ErrImagePull` znaczy, że kubelet nie zdołał pobrać obrazu. Zdarzenia podadzą dokładny powód i pełną nazwę obrazu."
+      - "Sprawdź, jakiego obrazu żąda Deployment: `kubectl get deploy obrazek -n lfs458-m12 -o jsonpath='{.spec.template.spec.containers[*].image}'`. Taka wersja nginxa nie istnieje."
+      - "`kubectl set image deployment/obrazek web=nginx:1.27-alpine -n lfs458-m12`"
+    solution: |
+      ```bash
+      kubectl describe pod -n lfs458-m12 -l app=obrazek | sed -n '/Events/,$p'
+      # Failed to pull image "nginx:9.9.9-nie-ma-takiej-wersji": not found
+
+      kubectl set image deployment/obrazek web=nginx:1.27-alpine -n lfs458-m12
+      kubectl rollout status deployment/obrazek -n lfs458-m12
+      ```
+    checks:
+      - name: "Deployment obrazek używa istniejącego obrazu"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m12
+          name: obrazek
+        assert:
+          - path: "{.spec.template.spec.containers[*].image}"
+            op: eq
+            value: "nginx:1.27-alpine"
+            message: "podmień obraz na `nginx:1.27-alpine` — poprzednia wersja nie istnieje w rejestrze"
+      - name: "replika Deploymentu obrazek jest gotowa"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m12
+          name: obrazek
+        assert:
+          - path: "{.status.readyReplicas}"
+            op: eq
+            value: 1
+            message: "poczekaj na rollout — `kubectl rollout status deployment/obrazek -n lfs458-m12`"
+
+  - id: task-2
+    points: 4
+    description: |
+      **Deployment `padajacy` restartuje się w kółko.**
+
+      Znajdź, **co aplikacja wypisuje przed śmiercią**, i zapisz to w arkuszu
+      **`~/odpowiedzi/lab-12.txt`** pod kluczem `blad` — wystarczy fragment
+      komunikatu.
+
+      Potem napraw Deployment tak, żeby kontener **nie kończył pracy**:
+      ma wykonywać `sleep 3600`.
+
+      > Do logów kontenera, który już nie żyje, dostaniesz się tylko jedną drogą.
+      > Wykład podpowiadał którą.
+    hints:
+      - "Stan `CrashLoopBackOff` znaczy: kontener startuje, pada i kubelet próbuje ponownie z rosnącym opóźnieniem."
+      - "Zwykłe `kubectl logs` pokaże logi **bieżącej** próby, która może jeszcze nie zdążyła nic wypisać. Potrzebujesz flagi `--previous`."
+      - "`kubectl logs -n lfs458-m12 -l app=padajacy --previous` — w komunikacie jest słowo `BLAD`."
+      - "Naprawa to podmiana polecenia kontenera:\n\n```bash\nkubectl patch deployment padajacy -n lfs458-m12 --type=strategic -p \\\n  '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"app\",\"command\":[\"sleep\",\"3600\"]}]}}}}'\n```"
+    solution: |
+      ```bash
+      POD=$(kubectl get pods -n lfs458-m12 -l app=padajacy -o jsonpath='{.items[0].metadata.name}')
+      kubectl logs "$POD" -n lfs458-m12 --previous
+      # BLAD: brak zmiennej TRYB, koncze prace
+
+      cat >> ~/odpowiedzi/lab-12.txt <<'EOF'
+      blad='brak
+      EOF
+
+      kubectl patch deployment padajacy -n lfs458-m12 --type=strategic -p \
+        '{"spec":{"template":{"spec":{"containers":[{"name":"app","command":["sleep","3600"]}]}}}}'
+      kubectl rollout status deployment/padajacy -n lfs458-m12
+      ```
+    checks:
+      - name: "odczytano komunikat z logów padającego kontenera"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 12 blad)
+            printf '%s' "$V" | grep -qE '(?i)TRYB' || ZLE="$ZLE blad"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "Deployment padajacy ma gotową replikę"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m12
+          name: padajacy
+        assert:
+          - path: "{.status.readyReplicas}"
+            op: eq
+            value: 1
+            message: "kontener nadal się kończy — zmień jego polecenie tak, żeby działał dalej"
+      - name: "Pody nie restartują się już w pętli"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m12
+          labelSelector: "app=padajacy"
+        assert:
+          - path: "{.items[*].status.containerStatuses[*].state.waiting.reason}"
+            op: eq
+            value: CrashLoopBackOff
+            quantifier: none
+            message: "któryś Pod wciąż jest w CrashLoopBackOff"
+
+  - id: task-3
+    points: 4
+    description: |
+      **Service `sklep` nie kieruje ruchu.**
+
+      Deployment działa, Pody są `Running`, a mimo to nikt się nie dodzwoni.
+      Znajdź przyczynę i napraw **Service** (nie Deployment).
+
+      Po naprawie Service ma mieć **dwa backendy**, a zapytanie z wnętrza
+      klastra ma zwracać stronę nginxa.
+
+      ```bash
+      kubectl get endpointslices -n lfs458-m12 -l kubernetes.io/service-name=sklep
+      ```
+    hints:
+      - "Pierwsze polecenie przy każdym problemie z Service'em: sprawdź, czy w ogóle ma backendy. `kubectl describe svc sklep -n lfs458-m12` — patrz na pole `Endpoints`."
+      - "Puste `Endpoints` przy działających Podach oznacza jedno: selektor Service'u nie pasuje do etykiet Podów."
+      - "Porównaj obie strony:\n\n```bash\nkubectl get svc sklep -n lfs458-m12 -o jsonpath='{.spec.selector}'\nkubectl get pods -n lfs458-m12 --show-labels\n```\n\nJedna literka się nie zgadza."
+      - "`kubectl patch svc sklep -n lfs458-m12 -p '{\"spec\":{\"selector\":{\"app\":\"sklep\"}}}'`"
+    solution: |
+      ```bash
+      kubectl describe svc sklep -n lfs458-m12 | grep -i endpoints
+      kubectl get svc sklep -n lfs458-m12 -o jsonpath='{.spec.selector}'   # app=sklepik
+      kubectl get pods -n lfs458-m12 --show-labels                          # app=sklep
+
+      kubectl patch svc sklep -n lfs458-m12 -p '{"spec":{"selector":{"app":"sklep"}}}'
+      kubectl get endpointslices -n lfs458-m12 -l kubernetes.io/service-name=sklep
+      ```
+    checks:
+      - name: "selektor Service'u pasuje do etykiet Podów"
+        resource:
+          apiVersion: v1
+          kind: Service
+          namespace: lfs458-m12
+          name: sklep
+        assert:
+          - path: "{.spec.selector['app']}"
+            op: eq
+            value: sklep
+            message: "selektor ma wskazywać `app=sklep` — porównaj go z `kubectl get pods --show-labels`"
+      - name: "Service ma dwa backendy"
+        resource:
+          apiVersion: discovery.k8s.io/v1
+          kind: EndpointSlice
+          namespace: lfs458-m12
+          labelSelector: "kubernetes.io/service-name=sklep"
+        assert:
+          - path: "{.items[*].endpoints[*].addresses[*]}"
+            count:
+              op: eq
+              value: 2
+            message: "po poprawieniu selektora kontroler powinien dopisać adresy obu Podów"
+      - name: "usługa odpowiada z wnętrza klastra"
+        exec:
+          timeout: 120s
+          # Po naprawie control plane (zadanie 7) CoreDNS potrzebuje chwili na
+          # odtworzenie wpisów. Bez ponowienia pierwsza próba bywa czerwona
+          # mimo poprawnie naprawionego Service'u.
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            for i in 1 2 3; do
+              ODP=$($K run sprawdzacz-m12-$i --rm -i --restart=Never \
+                      --image=busybox:1.36 -n lfs458-m12 \
+                      --command -- wget -qO- --timeout=5 http://sklep 2>/dev/null)
+              case "$ODP" in *nginx*) echo "WYNIK: usługa odpowiada (nginx)"; exit 0 ;; esac
+              sleep 5
+            done
+            echo "WYNIK: brak odpowiedzi od Service'u sklep"
+          stdoutMatches: "WYNIK: usługa odpowiada"
+
+  - id: task-4
+    points: 3
+    description: |
+      **Pod `czekajacy` nigdy nie wystartował.**
+
+      Zdiagnozuj powód i napraw tak, żeby Pod działał — **bez zmiany
+      etykiet node'ów**. Klaster ma zostać taki, jaki był.
+
+      ```bash
+      kubectl describe pod czekajacy -n lfs458-m12 | sed -n '/Events/,$p'
+      ```
+
+      > Pole, które blokuje planowanie, jest w Podzie **niezmienne**.
+      > Żeby je usunąć, trzeba Poda odtworzyć.
+    hints:
+      - "Stan `Pending` plus zdarzenie `FailedScheduling` — komunikat podaje, ile node'ów odpadło i dlaczego."
+      - "`node(s) didn't match Pod's node affinity/selector` znaczy, że `nodeSelector` Poda wskazuje etykietę, której żaden node nie ma."
+      - "Zobacz, czego żąda Pod: `kubectl get pod czekajacy -n lfs458-m12 -o jsonpath='{.spec.nodeSelector}'`. Zadanie zabrania nadawać node'om takiej etykiety — więc usuń warunek z Poda."
+      - "`spec.nodeSelector` jest polem niezmiennym. Usuń Poda i utwórz go ponownie bez tej sekcji:\n\n```bash\nkubectl delete pod czekajacy -n lfs458-m12\nkubectl run czekajacy --image=nginx:1.27-alpine -n lfs458-m12\n```"
+    solution: |
+      ```bash
+      kubectl describe pod czekajacy -n lfs458-m12 | sed -n '/Events/,$p'
+      # 0/3 nodes are available: 3 node(s) didn't match Pod's node affinity/selector
+
+      kubectl delete pod czekajacy -n lfs458-m12
+      kubectl run czekajacy --image=nginx:1.27-alpine -n lfs458-m12
+      kubectl wait --for=condition=Ready pod/czekajacy -n lfs458-m12 --timeout=120s
+      ```
+    checks:
+      - name: "Pod czekajacy działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m12
+          name: czekajacy
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+            message: "Pod nadal nie został zaplanowany — przeczytaj zdarzenia i usuń warunek, którego nikt nie spełnia"
+      - name: "nie obchodzono problemu przez etykietowanie node'ów"
+        resource:
+          apiVersion: v1
+          kind: Node
+        assert:
+          - path: "{.items[*].metadata.labels['sprzet']}"
+            op: notExists
+            message: "zadanie wymaga naprawy Poda, a nie nadania node'om fikcyjnej etykiety `sprzet`"
+
+  - id: task-5
+    points: 3
+    optional: true
+    description: |
+      **Sprawdź, czym oddycha klaster.**
+
+      Zadanie dodatkowe. Odczytaj metryki node'ów i Podów, a wynik zapisz
+      w arkuszu **`~/odpowiedzi/lab-12.txt`**:
+
+      | Klucz | Co ma zawierać |
+      |---|---|
+      | `zrodlo` | nazwa komponentu, który dostarcza dane do `kubectl top` |
+      | `api-grupa` | grupa API, przez którą te metryki są wystawiane |
+      | `nodow` | liczba node'ów widocznych w `kubectl top nodes` |
+
+      ```bash
+      kubectl top nodes
+      kubectl top pods -n lfs458-m12
+      kubectl get apiservices | grep metrics
+      ```
+    hints:
+      - "Komponent zbierający metryki z kubeletów działa w `kube-system`. Znajdziesz go w `kubectl get deploy -n kube-system`."
+      - "Grupę API zobaczysz w `kubectl get apiservices | grep metrics` — to `metrics.k8s.io`."
+      - "```bash\ncat >> ~/odpowiedzi/lab-12.txt <<'EOF'\nzrodlo=metrics-server\napi-grupa=metrics.k8s.io\nnodow=3\nEOF\n```"
+    solution: |
+      ```bash
+      kubectl top nodes
+      kubectl get apiservices | grep metrics
+
+      cat >> ~/odpowiedzi/lab-12.txt <<'EOF'
+      zrodlo=metrics-server
+      api-grupa=metrics.k8s.io
+      nodow=3
+      EOF
+      ```
+    checks:
+      - name: "wskazano źródło metryk i grupę API"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 12 zrodlo)
+            [ "$V" = 'metrics-server' ] || ZLE="$ZLE zrodlo"
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 12 api-grupa)
+            [ "$V" = 'metrics.k8s.io' ] || ZLE="$ZLE api-grupa"
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 12 nodow)
+            [ "$V" = '3' ] || ZLE="$ZLE nodow"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "Metrics API rzeczywiście odpowiada"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" top nodes --no-headers \
+              | wc -l | tr -d ' '
+          stdoutMatches: "^3$"
+
+  # Quiz ma własne zepsute obiekty w osobnym namespace. Gdyby pytał o te
+  # z `setup`, odpowiedzi zmieniałyby się w miarę, jak kursant je naprawia.
+  - id: task-6
+    points: 2
+    description: |
+      **Rozpoznaj awarię po objawach.**
+
+      W namespace `lfs458-m12-quiz` lab wdrożył kolejne zepsute obiekty —
+      tym razem nie masz ich naprawiać, tylko **nazwać przyczynę**.
+    quiz:
+      przygotuj:
+        timeout: 5m
+        script: |
+          K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+          $K create namespace lfs458-m12-quiz --dry-run=client -o yaml | $K apply -f - >/dev/null
+          cat <<'YAML' | $K apply -f - >/dev/null
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata: {name: widmo, namespace: lfs458-m12-quiz}
+          spec:
+            replicas: 1
+            selector: {matchLabels: {app: widmo}}
+            template:
+              metadata: {labels: {app: widmo}}
+              spec:
+                containers:
+                  - name: web
+                    image: nginx:8.8.8-nie-istnieje
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: bez-miejsca, namespace: lfs458-m12-quiz}
+          spec:
+            containers:
+              - name: web
+                image: nginx:1.27-alpine
+                resources:
+                  requests: {memory: 500Gi}
+          YAML
+          sleep 20
+      pytania:
+        - pytanie: |
+            W jakim stanie jest Pod Deploymentu `widmo`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pods -n lfs458-m12-quiz -l app=widmo \
+                -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}'
+          mylne: ["CrashLoopBackOff", "CreateContainerError", "ErrImageNeverPull"]
+          wskazowka: "kubectl get pods -n lfs458-m12-quiz — kolumna STATUS"
+
+        - pytanie: |
+            Jakiego obrazu żąda ten Deployment?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get deploy widmo -n lfs458-m12-quiz \
+                -o jsonpath='{.spec.template.spec.containers[0].image}'
+          mylne: ["nginx:1.27-alpine", "nginx:latest", "nginx:8.8.8"]
+          wskazowka: "kubectl get deploy widmo -n lfs458-m12-quiz -o jsonpath='{.spec.template.spec.containers[*].image}'"
+
+        - pytanie: |
+            Jaki powód podaje warunek `PodScheduled` Poda `bez-miejsca`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pod bez-miejsca -n lfs458-m12-quiz \
+                -o jsonpath='{.status.conditions[?(@.type=="PodScheduled")].reason}'
+          mylne: ["SchedulingDisabled", "NodeAffinity", "Evicted"]
+          wskazowka: "kubectl describe pod bez-miejsca -n lfs458-m12-quiz | sed -n '/Conditions/,/Events/p'"
+
+  # ── naprawa control plane ────────────────────────────────────────────────
+  # Każde z tych zadań psuje coś, bez czego klaster przestaje działać.
+  # Psucie siedzi w `przygotuj` zadania, a nie w `setup` modułu — inaczej
+  # kubectl padłby, zanim kursant zobaczy zadania 1–5.
+  # Skrypty są idempotentne: po powrocie do niezaliczonego zadania wykonują
+  # się ponownie i nie mogą zepsuć czegoś dwa razy.
+
+  - id: task-7
+    points: 4
+    przygotuj:
+      opis: "psuję serwer API — za chwilę stracisz kubectl…"
+      timeout: 3m
+      script: |
+        CRI="${CONTAINER_CLI:-docker}"
+        W=lfs458-control-plane
+        M=/etc/kubernetes/manifests/kube-apiserver.yaml
+        # kopia zapasowa tylko raz — żeby ponowne wejście nie nadpisało jej
+        # wersją już zepsutą
+        "$CRI" exec "$W" test -f /etc/kubernetes/apiserver.oryginal 2>/dev/null \
+          || "$CRI" exec "$W" cp "$M" /etc/kubernetes/apiserver.oryginal
+        # Podmieniamy całą wartość, nie dopisujemy do listy: klient etcd
+        # rozkłada ruch po endpointach, więc z jednym żywym adresem apiserver
+        # wstałby sam i zadanie naprawiłoby się bez kursanta.
+        if ! "$CRI" exec "$W" grep -q 'etcd-servers=https://127.0.0.1:9999$' "$M" 2>/dev/null; then
+          "$CRI" exec "$W" sed -i \
+            's|--etcd-servers=.*|--etcd-servers=https://127.0.0.1:9999|' "$M"
+        fi
+    description: |
+      **Straciłeś `kubectl`. Odzyskaj go.**
+
+      Serwer API nie odpowiada:
+
+      ```
+      Unable to connect to the server: EOF
+      ```
+
+      Nie masz API, więc nie masz `kubectl get pods`, `logs` ani `describe`.
+      Masz za to node — a na nim kubelet, który wciąż pracuje, i runtime,
+      który wciąż widzi kontenery.
+
+      ```bash
+      docker exec -it lfs458-control-plane bash
+      crictl ps -a --name kube-apiserver
+      crictl logs <id>
+      ```
+
+      Znajdź przyczynę i przywróć działanie klastra. Manifest, który kubelet
+      czyta, leży w `/etc/kubernetes/manifests/`.
+
+      > Jeśli naprawdę utkniesz, `labctl env reset basic` postawi klaster od zera
+      > w 73 sekundy — ale spróbuj najpierw, bo na egzaminie takiego przycisku nie ma.
+    hints:
+      - "Control plane to **static Pody**. Kubelet czyta je z katalogu na node'ie, więc do naprawy nie potrzebujesz działającego API."
+      - "`crictl logs` ostatniego kontenera apiservera powie, z czym nie umie się połączyć. Zwróć uwagę na numer portu."
+      - "W `--etcd-servers` wpisany jest adres, pod którym nic nie nasłuchuje. etcd obsługuje klientów na porcie **2379**."
+      - "Popraw port i poczekaj — kubelet podnosi zmieniony manifest w kilkanaście sekund:\n\n```bash\ndocker exec lfs458-control-plane \\\n  sed -i 's|9999|2379|' /etc/kubernetes/manifests/kube-apiserver.yaml\n```"
+    solution: |
+      ```bash
+      docker exec lfs458-control-plane \
+        sed -i 's|9999|2379|' /etc/kubernetes/manifests/kube-apiserver.yaml
+
+      # kubelet sam podniesie poprawioną wersję
+      until kubectl --context kind-lfs458 get nodes >/dev/null 2>&1; do sleep 3; done
+      kubectl --context kind-lfs458 get nodes
+      ```
+
+      Dlaczego to zadziałało bez API: kubelet nie pyta serwera API o static Pody —
+      czyta je z dysku. Dlatego control plane da się naprawić wtedy, gdy wszystko
+      inne jest nieosiągalne.
+    checks:
+      - name: "serwer API znów odpowiada"
+        exec:
+          timeout: 60s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" get --raw /healthz 2>/dev/null \
+              || echo "BRAK ODPOWIEDZI"
+          stdoutMatches: "^ok$"
+      - name: "z manifestu zniknął błędny adres etcd"
+        exec:
+          timeout: 60s
+          script: |
+            CRI="${CONTAINER_CLI:-docker}"
+            if "$CRI" exec lfs458-control-plane grep -q '9999' \
+                 /etc/kubernetes/manifests/kube-apiserver.yaml 2>/dev/null; then
+              echo "WYNIK: błędny adres nadal w manifeście"
+            else
+              echo "WYNIK: manifest czysty"
+            fi
+          stdoutMatches: "WYNIK: manifest czysty"
+      - name: "wszystkie node'y są Ready"
+        resource:
+          apiVersion: v1
+          kind: Node
+        assert:
+          - path: "{.items[*].status.conditions[?(@.type=='Ready')].status}"
+            op: eq
+            value: "True"
+            quantifier: all
+            message: "klaster wrócił, ale któryś node jeszcze nie jest gotowy — daj mu chwilę"
+
+  - id: task-8
+    points: 4
+    przygotuj:
+      opis: "psuję scheduler…"
+      timeout: 3m
+      script: |
+        CRI="${CONTAINER_CLI:-docker}"
+        W=lfs458-control-plane
+        M=/etc/kubernetes/manifests/kube-scheduler.yaml
+        "$CRI" exec "$W" test -f /etc/kubernetes/scheduler.oryginal 2>/dev/null \
+          || "$CRI" exec "$W" cp "$M" /etc/kubernetes/scheduler.oryginal
+        if ! "$CRI" exec "$W" grep -q 'kube-scheduler:v0.0.0-nie-ma' "$M" 2>/dev/null; then
+          "$CRI" exec "$W" sed -i \
+            's|image: .*kube-scheduler.*|image: registry.k8s.io/kube-scheduler:v0.0.0-nie-ma|' "$M"
+        fi
+        # Pod, który nie ma kto zaplanować — materiał dowodowy dla kursanta
+        K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+        $K create namespace lfs458-m12 --dry-run=client -o yaml | $K apply -f - >/dev/null 2>&1
+        $K run osierocony --image=nginx:1.27-alpine -n lfs458-m12 \
+          --dry-run=client -o yaml | $K apply -f - >/dev/null 2>&1
+    description: |
+      **Pod wisi w `Pending`, a zdarzenia milczą.**
+
+      W namespace `lfs458-m12` powstał Pod `osierocony`. Stoi w `Pending`,
+      ale `describe` **nie pokazuje żadnego `FailedScheduling`** — ani słowa
+      o braku zasobów, taintach czy selektorach.
+
+      ```bash
+      kubectl get pod osierocony -n lfs458-m12
+      kubectl describe pod osierocony -n lfs458-m12 | sed -n '/Events/,$p'
+      ```
+
+      Brak komunikatu **jest** komunikatem. Zastanów się, kto powinien ten
+      komunikat wypisać — i sprawdź, czy w ogóle działa.
+    hints:
+      - "Gdy scheduler odmawia zaplanowania, zostawia zdarzenie `FailedScheduling`. Brak **jakiegokolwiek** zdarzenia znaczy, że nikt na tego Poda nie patrzy."
+      - "Sprawdź, co dzieje się z komponentami control plane: `kubectl get pods -n kube-system | grep scheduler`."
+      - "Scheduler jest static Podem, tak jak apiserver. Zajrzyj do jego manifestu na node'ie i porównaj pole `image` z tym, co naprawdę istnieje w rejestrze."
+      - "Przywróć poprawny obraz:\n\n```bash\ndocker exec lfs458-control-plane \\\n  cp /etc/kubernetes/scheduler.oryginal /etc/kubernetes/manifests/kube-scheduler.yaml\n```"
+    solution: |
+      ```bash
+      kubectl get pods -n kube-system | grep scheduler
+      # kube-scheduler-...  0/1  ImagePullBackOff
+
+      docker exec lfs458-control-plane \
+        cp /etc/kubernetes/scheduler.oryginal /etc/kubernetes/manifests/kube-scheduler.yaml
+
+      kubectl get pod osierocony -n lfs458-m12 -w     # dostanie node w kilka sekund
+      ```
+
+      Lekcja: **`Pending` bez zdarzeń to nie problem Poda, tylko schedulera.**
+      Gdy scheduler działa i nie potrafi znaleźć miejsca, zawsze to zapisuje.
+    checks:
+      - name: "scheduler znów działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: kube-system
+          labelSelector: "component=kube-scheduler"
+        assert:
+          - path: "{.items[*].status.conditions[?(@.type=='Ready')].status}"
+            op: eq
+            value: "True"
+            quantifier: any
+            message: "Pod schedulera wciąż nie jest gotowy — sprawdź `kubectl get pods -n kube-system | grep scheduler`"
+      - name: "osierocony Pod został zaplanowany i działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m12
+          name: osierocony
+        assert:
+          - path: "{.spec.nodeName}"
+            op: exists
+            message: "Pod nadal nie ma przypisanego node'a — scheduler go nie dotknął"
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+
+  - id: task-9
+    points: 4
+    przygotuj:
+      opis: "zatrzymuję kubelet na node'ie roboczym…"
+      timeout: 3m
+      script: |
+        CRI="${CONTAINER_CLI:-docker}"
+        "$CRI" exec lfs458-worker2 systemctl stop kubelet 2>/dev/null || true
+    description: |
+      **Node `lfs458-worker2` jest `NotReady`.**
+
+      ```bash
+      kubectl get nodes
+      kubectl describe node lfs458-worker2 | sed -n '/Conditions/,/Addresses/p'
+      ```
+
+      Sam klaster działa — API odpowiada, pozostałe node'y pracują. Problem
+      jest po stronie jednego node'a i nie naprawisz go przez API: to node
+      ma zgłaszać swój stan, a skoro nie zgłasza, trzeba wejść do środka.
+
+      > Po pięciu minutach w tym stanie kontroler zacznie eksmitować z niego
+      > Pody — `NotReady` nie jest stanem, w którym się czeka.
+    hints:
+      - "`kubectl describe node` powie, kiedy node ostatnio się odezwał (`LastHeartbeatTime`) i co o tym sądzi kontroler."
+      - "Stan node'a raportuje **kubelet**. Jeśli node milczy, zacznij od sprawdzenia, czy ta usługa w ogóle działa."
+      - "Node klastra Kind to kontener z systemd w środku:\n\n```bash\ndocker exec lfs458-worker2 systemctl status kubelet\n```"
+      - "Uruchom ją ponownie:\n\n```bash\ndocker exec lfs458-worker2 systemctl start kubelet\n```"
+    solution: |
+      ```bash
+      docker exec lfs458-worker2 systemctl status kubelet     # inactive (dead)
+      docker exec lfs458-worker2 journalctl -u kubelet -n 20  # co było przedtem
+      docker exec lfs458-worker2 systemctl start kubelet
+
+      kubectl get nodes -w     # wraca do Ready w kilkanaście sekund
+      ```
+
+      Na prawdziwym klastrze zrobiłbyś dokładnie to samo przez `ssh`.
+      Najczęstsze przyczyny w praktyce: pełny dysk, włączony swap,
+      rozjechany cgroup driver i wygasłe certyfikaty kubeleta.
+    checks:
+      - name: "node lfs458-worker2 wrócił do Ready"
+        resource:
+          apiVersion: v1
+          kind: Node
+          name: lfs458-worker2
+        assert:
+          - path: "{.status.conditions[?(@.type=='Ready')].status}"
+            op: eq
+            value: "True"
+            message: "kubelet potrzebuje kilkunastu sekund po starcie — poczekaj i sprawdź ponownie"
+      - name: "kubelet na tym node'ie jest uruchomiony"
+        exec:
+          timeout: 60s
+          script: |
+            CRI="${CONTAINER_CLI:-docker}"
+            "$CRI" exec lfs458-worker2 systemctl is-active kubelet 2>/dev/null
+          stdoutMatches: "^active$"

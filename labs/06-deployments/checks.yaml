@@ -1,0 +1,530 @@
+module: "06"
+title: "Managing State With Deployments — wydawanie wersji"
+chapter: 6
+chapterTitle: "Managing State With Deployments"
+day: 2
+environment: kind-basic
+
+intro: |
+  Pełny cykl życia wdrożenia: wydanie, aktualizacja, wycofanie, strategia bez
+  przerwy w działaniu i kontroler, który nie ma pola `replicas`.
+
+  Trzymaj otwarte drugie okno terminala z podglądem na żywo — połowa nauki
+  w tym labie polega na patrzeniu, co się dzieje w trakcie:
+
+  ```bash
+  kubectl get pods -n lfs458-m06 -w
+  ```
+
+cleanup:
+  - name: "Usuwam namespace lfs458-m06"
+    timeout: 3m
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m06 --ignore-not-found --wait=true
+  - name: "Usuwam namespace zadania quizowego"
+    timeout: 5m
+    ignoreError: true
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m06-quiz \
+        --ignore-not-found --wait=true
+
+tasks:
+  - id: task-1
+    points: 3
+    description: |
+      **Wdróż aplikację.**
+
+      W namespace `lfs458-m06` utwórz Deployment **`sklep`**:
+
+      - obraz **`nginx:1.26-alpine`** *(celowo starsza wersja — zaraz ją podniesiesz)*
+      - **3 repliki**
+      - etykieta Podów `app=sklep`
+
+      Poczekaj, aż wszystkie trzy repliki będą gotowe, i zobacz, ile
+      ReplicaSetów powstało.
+    hints:
+      - "`kubectl create deployment sklep --image=nginx:1.26-alpine --replicas=3 -n lfs458-m06` ustawia etykietę `app=sklep` automatycznie."
+      - "Postęp: `kubectl rollout status deployment/sklep -n lfs458-m06`."
+      - "`kubectl get rs -n lfs458-m06` pokaże jeden ReplicaSet — po aktualizacji będą dwa."
+    solution: |
+      ```bash
+      kubectl create namespace lfs458-m06
+      kubectl create deployment sklep --image=nginx:1.26-alpine --replicas=3 -n lfs458-m06
+      kubectl rollout status deployment/sklep -n lfs458-m06
+      kubectl get rs -n lfs458-m06
+      ```
+    checks:
+      - name: "Deployment sklep ma 3 repliki i wszystkie są gotowe"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m06
+          name: sklep
+        assert:
+          - path: "{.spec.replicas}"
+            op: eq
+            value: 3
+          - path: "{.status.readyReplicas}"
+            op: eq
+            valuePath: "{.spec.replicas}"
+            message: "poczekaj, aż wszystkie repliki będą Ready"
+      - name: "Pody mają etykietę app=sklep"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m06
+          labelSelector: "app=sklep"
+        assert:
+          - path: "{.items[*].metadata.name}"
+            count:
+              op: gte
+              value: 3
+            message: "`kubectl get pods -n lfs458-m06 -l app=sklep` powinno pokazać co najmniej 3 Pody"
+
+  - id: task-2
+    points: 4
+    description: |
+      **Wydaj nową wersję i zostaw ślad.**
+
+      Podnieś obraz Deploymentu `sklep` do **`nginx:1.27-alpine`** i zapisz
+      powód zmiany w adnotacji `kubernetes.io/change-cause`.
+
+      Obserwuj rollout w drugim oknie — zobaczysz, jak nowy ReplicaSet rośnie,
+      a stary maleje.
+
+      Po wszystkim sprawdź historię:
+
+      ```bash
+      kubectl rollout history deployment/sklep -n lfs458-m06
+      ```
+
+      > Sprawdzenie patrzy na **numer rewizji i liczbę ReplicaSetów**, a nie na
+      > bieżący obraz — bo w następnym zadaniu będziesz tę zmianę cofać.
+    hints:
+      - "Obraz zmienisz poleceniem `kubectl set image deployment/sklep <kontener>=<obraz> -n lfs458-m06`. Nazwę kontenera podpowie `kubectl get deploy sklep -n lfs458-m06 -o jsonpath='{.spec.template.spec.containers[*].name}'`."
+      - "Adnotację dodaje się osobno: `kubectl annotate deployment/sklep -n lfs458-m06 kubernetes.io/change-cause='...'`."
+      - "Komplet:\n\n```bash\nkubectl set image deployment/sklep nginx=nginx:1.27-alpine -n lfs458-m06\nkubectl annotate deployment/sklep -n lfs458-m06 \\\n  kubernetes.io/change-cause='podniesienie nginx do 1.27' --overwrite\nkubectl rollout status deployment/sklep -n lfs458-m06\n```"
+    solution: |
+      ```bash
+      kubectl set image deployment/sklep nginx=nginx:1.27-alpine -n lfs458-m06
+      kubectl annotate deployment/sklep -n lfs458-m06 \
+        kubernetes.io/change-cause='podniesienie nginx do 1.27' --overwrite
+      kubectl rollout status deployment/sklep -n lfs458-m06
+      kubectl rollout history deployment/sklep -n lfs458-m06
+      kubectl get rs -n lfs458-m06
+      ```
+    checks:
+      - name: "Deployment ma za sobą co najmniej dwie rewizje"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m06
+          name: sklep
+        assert:
+          - path: "{.metadata.annotations['deployment\\.kubernetes\\.io/revision']}"
+            op: gte
+            value: 2
+            message: "po aktualizacji obrazu numer rewizji rośnie — `kubectl rollout history`"
+      - name: "w historii jest rewizja z obrazem nginx:1.27-alpine"
+        resource:
+          apiVersion: apps/v1
+          kind: ReplicaSet
+          namespace: lfs458-m06
+          labelSelector: "app=sklep"
+        assert:
+          - path: "{.items[*].spec.template.spec.containers[*].image}"
+            op: eq
+            value: "nginx:1.27-alpine"
+            quantifier: any
+            message: "żaden ReplicaSet nie używa nginx:1.27-alpine — czy aktualizacja się wykonała?"
+      - name: "powód zmiany został zapisany w historii"
+        resource:
+          apiVersion: apps/v1
+          kind: ReplicaSet
+          namespace: lfs458-m06
+          labelSelector: "app=sklep"
+        assert:
+          - path: "{.items[*].metadata.annotations['kubernetes\\.io/change-cause']}"
+            op: matches
+            value: "^.{5,}$"
+            quantifier: any
+            message: "dodaj adnotacje `kubernetes.io/change-cause` — trafi ona do ReplicaSetu tej rewizji"
+      - name: "istnieją dwa ReplicaSety — aktualny i historyczny"
+        resource:
+          apiVersion: apps/v1
+          kind: ReplicaSet
+          namespace: lfs458-m06
+          labelSelector: "app=sklep"
+        assert:
+          - path: "{.items[*].metadata.name}"
+            count:
+              op: gte
+              value: 2
+            message: "każda wersja to osobny ReplicaSet — `kubectl get rs -n lfs458-m06`"
+
+  - id: task-3
+    points: 4
+    description: |
+      **Wycofaj zmianę.**
+
+      Okazało się, że nowa wersja jest zła. Cofnij Deployment `sklep`
+      do **poprzedniej rewizji** — po operacji ma znów działać
+      `nginx:1.26-alpine`.
+
+      Zwróć uwagę na numer rewizji po wycofaniu. Nie wróci do 1 —
+      `rollout undo` tworzy **nową** rewizję z zawartością starej.
+
+      **Pułapka do sprawdzenia własnoręcznie:** zajrzyj po wycofaniu na
+      adnotację `kubernetes.io/change-cause` Deploymentu. Zniknęła — bo `undo`
+      przywraca **cały** szablon starej rewizji razem z jej adnotacjami,
+      a tamta żadnego powodu nie miała. Zapisz więc nowy powód, opisujący
+      **wycofanie**.
+    hints:
+      - "`kubectl rollout undo deployment/sklep -n lfs458-m06` cofa o jeden krok."
+      - "Możesz też wskazać cel: `kubectl rollout undo deployment/sklep --to-revision=1 -n lfs458-m06`."
+      - "Sprawdź efekt: `kubectl get deploy sklep -n lfs458-m06 -o jsonpath='{.spec.template.spec.containers[*].image}'`."
+      - "Po wycofaniu ustaw adnotację ponownie: `kubectl annotate deployment/sklep -n lfs458-m06 --overwrite kubernetes.io/change-cause='wycofanie do 1.26'`."
+    solution: |
+      ```bash
+      kubectl rollout undo deployment/sklep -n lfs458-m06
+      kubectl rollout status deployment/sklep -n lfs458-m06
+
+      kubectl get deploy sklep -n lfs458-m06 \
+        -o jsonpath='{.spec.template.spec.containers[*].image}{"\n"}'
+      kubectl rollout history deployment/sklep -n lfs458-m06
+      ```
+    checks:
+      - name: "Deployment działa znów na nginx:1.26-alpine"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m06
+          name: sklep
+        assert:
+          - path: "{.spec.template.spec.containers[*].image}"
+            op: eq
+            value: "nginx:1.26-alpine"
+            message: "po `rollout undo` obraz ma wrócić do wersji sprzed aktualizacji"
+      - name: "numer rewizji wzrósł — undo nie kasuje historii"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m06
+          name: sklep
+        assert:
+          - path: "{.metadata.annotations['deployment\\.kubernetes\\.io/revision']}"
+            op: gte
+            value: 3
+            message: "`rollout undo` tworzy nową rewizję z zawartością starej — numer rośnie, nie maleje"
+      - name: "po wycofaniu ponownie zapisano powód zmiany"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m06
+          name: sklep
+        assert:
+          - path: "{.metadata.annotations['kubernetes\\.io/change-cause']}"
+            op: matches
+            value: "^.{5,}$"
+            message: "`rollout undo` skasował adnotację razem z szablonem starej rewizji — ustaw ją ponownie"
+      - name: "wszystkie repliki znów gotowe"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m06
+          name: sklep
+        assert:
+          - path: "{.status.readyReplicas}"
+            op: eq
+            valuePath: "{.spec.replicas}"
+
+  - id: task-4
+    points: 4
+    description: |
+      **Ustaw wdrożenie bez przestoju.**
+
+      Zmień Deployment `sklep` tak, żeby:
+
+      | Ustawienie | Wartość |
+      |---|---|
+      | `strategy.type` | `RollingUpdate` |
+      | `maxUnavailable` | `0` — ani jednej repliki mniej w trakcie wymiany |
+      | `maxSurge` | `1` — najwyżej jedna nadmiarowa |
+      | `readinessProbe` | zapytanie HTTP `GET /` na porcie `80` |
+
+      Bez `readinessProbe` `maxUnavailable: 0` niczego nie gwarantuje —
+      Kubernetes uzna Pod za gotowy, zanim aplikacja faktycznie odpowie.
+    hints:
+      - "Najwygodniej `kubectl edit deployment sklep -n lfs458-m06`, ale możesz też użyć `kubectl patch`."
+      - "Struktura: `spec.strategy.rollingUpdate.maxUnavailable` i `.maxSurge`. `readinessProbe` idzie do `spec.template.spec.containers[0].readinessProbe`."
+      - "`kubectl explain deployment.spec.template.spec.containers.readinessProbe.httpGet` poda dokładne nazwy pól."
+      - "Patch jednym poleceniem:\n\n```bash\nkubectl patch deployment sklep -n lfs458-m06 --type=strategic -p '{\n  \"spec\": {\n    \"strategy\": {\"type\":\"RollingUpdate\",\"rollingUpdate\":{\"maxUnavailable\":0,\"maxSurge\":1}},\n    \"template\": {\"spec\": {\"containers\": [{\"name\":\"nginx\",\"readinessProbe\":{\"httpGet\":{\"path\":\"/\",\"port\":80},\"initialDelaySeconds\":2,\"periodSeconds\":5}}]}}\n  }\n}'\n```"
+    solution: |
+      ```bash
+      kubectl patch deployment sklep -n lfs458-m06 --type=strategic -p '{
+        "spec": {
+          "strategy": {
+            "type": "RollingUpdate",
+            "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1}
+          },
+          "template": {
+            "spec": {
+              "containers": [{
+                "name": "nginx",
+                "readinessProbe": {
+                  "httpGet": {"path": "/", "port": 80},
+                  "initialDelaySeconds": 2,
+                  "periodSeconds": 5
+                }
+              }]
+            }
+          }
+        }
+      }'
+      kubectl rollout status deployment/sklep -n lfs458-m06
+      ```
+    checks:
+      - name: "strategia to RollingUpdate z maxUnavailable=0 i maxSurge=1"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m06
+          name: sklep
+        assert:
+          - path: "{.spec.strategy.type}"
+            op: eq
+            value: RollingUpdate
+          - path: "{.spec.strategy.rollingUpdate.maxUnavailable}"
+            op: eq
+            value: 0
+            message: "maxUnavailable ma być 0 — żadna replika nie może zniknąć w trakcie wymiany"
+          - path: "{.spec.strategy.rollingUpdate.maxSurge}"
+            op: eq
+            value: 1
+      - name: "kontener ma readinessProbe HTTP na porcie 80"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m06
+          name: sklep
+        assert:
+          - path: "{.spec.template.spec.containers[*].readinessProbe.httpGet.port}"
+            op: eq
+            value: 80
+            message: "`kubectl explain deployment.spec.template.spec.containers.readinessProbe.httpGet`"
+          - path: "{.spec.template.spec.containers[*].readinessProbe.httpGet.path}"
+            op: eq
+            value: "/"
+      - name: "po zmianie wszystkie repliki są gotowe"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m06
+          name: sklep
+        assert:
+          - path: "{.status.readyReplicas}"
+            op: eq
+            valuePath: "{.spec.replicas}"
+            message: "zmiana szablonu wywołała kolejny rollout — poczekaj na jego koniec"
+
+  - id: task-5
+    points: 3
+    description: |
+      **Uruchom agenta na każdym node'ie.**
+
+      Utwórz w `lfs458-m06` DaemonSet **`agent`**:
+
+      - obraz `busybox:1.36`, polecenie `sleep 3600`
+      - ma działać na **wszystkich trzech** node'ach, także na control plane
+
+      Zwróć uwagę, że DaemonSet **nie ma pola `replicas`** — liczbę Podów
+      wyznacza liczba node'ów. Żeby trafił też na control plane, potrzebny jest
+      `toleration` dla jego `taint`.
+    hints:
+      - "Szkielet wygenerujesz z Deploymentu i przerobisz: usuń `replicas`, zamień `kind` na `DaemonSet`."
+      - "Control plane node ma taint `node-role.kubernetes.io/control-plane:NoSchedule`. Bez `toleration` DaemonSet trafi tylko na dwa workery."
+      - "Wpis:\n\n```yaml\ntolerations:\n  - key: node-role.kubernetes.io/control-plane\n    operator: Exists\n    effect: NoSchedule\n```"
+      - "Sprawdź: `kubectl get ds agent -n lfs458-m06` — kolumny DESIRED i READY mają pokazywać 3."
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: agent
+        namespace: lfs458-m06
+      spec:
+        selector:
+          matchLabels:
+            app: agent
+        template:
+          metadata:
+            labels:
+              app: agent
+          spec:
+            tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: agent
+                image: busybox:1.36
+                command: ["sleep", "3600"]
+      EOF
+
+      kubectl rollout status ds/agent -n lfs458-m06
+      kubectl get pods -n lfs458-m06 -l app=agent -o wide
+      ```
+    checks:
+      - name: "DaemonSet agent działa na wszystkich node'ach"
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          namespace: lfs458-m06
+          name: agent
+        assert:
+          - path: "{.status.desiredNumberScheduled}"
+            op: eq
+            value: 3
+            message: "bez `toleration` dla taintu control plane DaemonSet zaplanuje tylko 2 Pody"
+          - path: "{.status.numberReady}"
+            op: eq
+            valuePath: "{.status.desiredNumberScheduled}"
+            message: "poczekaj, aż wszystkie Pody DaemonSetu będą gotowe"
+      - name: "DaemonSet nie ma pola replicas"
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          namespace: lfs458-m06
+          name: agent
+        assert:
+          - path: "{.spec.replicas}"
+            op: notExists
+            message: "DaemonSet nie przyjmuje `replicas` — liczbę Podów wyznacza liczba node'ów"
+      - name: "Pody agenta są na trzech różnych node'ach"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m06
+          labelSelector: "app=agent"
+        assert:
+          - path: "{.items[*].spec.nodeName}"
+            count:
+              op: eq
+              value: 3
+
+  - id: task-6
+    points: 3
+    optional: true
+    description: |
+      **Odetnij Pod od kontrolera.**
+
+      Zadanie dodatkowe — najbardziej praktyczna technika diagnostyczna
+      z tego modułu.
+
+      Wybierz jeden Pod Deploymentu `sklep` i zmień mu etykietę `app`
+      na **`sklep-debug`**. Obserwuj, co się stanie:
+
+      ```bash
+      kubectl get pods -n lfs458-m06 -w
+      ```
+
+      Po operacji ma być prawdą, że:
+
+      - Deployment `sklep` **nadal ma 3 gotowe repliki** (odtworzył brakującą),
+      - istnieje **jeden** Pod z etykietą `app=sklep-debug`,
+      - ten Pod **nie ma właściciela** — a właściwie ma, ale już do niego nie należy.
+    hints:
+      - "Nazwę Poda weźmiesz z `kubectl get pods -n lfs458-m06 -l app=sklep -o name | head -1`."
+      - "`kubectl label pod <nazwa> -n lfs458-m06 app=sklep-debug --overwrite`"
+      - "ReplicaSet zauważa brak w ułamku sekundy i tworzy nowy Pod. Odcięty Pod działa dalej — nikt go nie usunie."
+    solution: |
+      ```bash
+      POD=$(kubectl get pods -n lfs458-m06 -l app=sklep -o jsonpath='{.items[0].metadata.name}')
+      kubectl label pod "$POD" -n lfs458-m06 app=sklep-debug --overwrite
+
+      kubectl get pods -n lfs458-m06 --show-labels
+      kubectl get deploy sklep -n lfs458-m06
+      ```
+    checks:
+      - name: "istnieje dokładnie jeden odcięty Pod z etykietą app=sklep-debug"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m06
+          labelSelector: "app=sklep-debug"
+        assert:
+          - path: "{.items[*].metadata.name}"
+            count:
+              op: eq
+              value: 1
+            message: "zmień etykietę `app` dokładnie jednemu Podowi Deploymentu"
+      - name: "Deployment uzupełnił brakującą replikę"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m06
+          name: sklep
+        assert:
+          - path: "{.status.readyReplicas}"
+            op: eq
+            valuePath: "{.spec.replicas}"
+            message: "ReplicaSet powinien odtworzyć Pod, który zniknął mu z selektora"
+      - name: "odcięty Pod nadal działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m06
+          labelSelector: "app=sklep-debug"
+        assert:
+          - path: "{.items[*].status.phase}"
+            op: eq
+            value: Running
+            message: "odcięty Pod nie jest usuwany — właśnie o to chodzi w tej technice"
+
+  # `przygotuj` buduje osobny Deployment z dwiema rewizjami, żeby pytania
+  # działały niezależnie od tego, jak daleko kursant zaszedł w module.
+  - id: task-7
+    points: 2
+    description: |
+      **Przeczytaj historię wydania.**
+
+      W namespace `lfs458-m06-quiz` lab wydał aplikację i podniósł jej wersję.
+      Odpowiedz na pytania o to, co po tym zostało w klastrze.
+    quiz:
+      przygotuj:
+        timeout: 5m
+        script: |
+          K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+          $K create namespace lfs458-m06-quiz --dry-run=client -o yaml | $K apply -f - >/dev/null
+          $K create deployment historia --image=nginx:1.26-alpine --replicas=2 \
+            -n lfs458-m06-quiz --dry-run=client -o yaml | $K apply -f - >/dev/null
+          $K rollout status deployment/historia -n lfs458-m06-quiz --timeout=180s >/dev/null
+          $K set image deployment/historia nginx=nginx:1.27-alpine -n lfs458-m06-quiz >/dev/null
+          $K rollout status deployment/historia -n lfs458-m06-quiz --timeout=180s >/dev/null
+      pytania:
+        - pytanie: |
+            Ile ReplicaSetów ma Deployment `historia` po podniesieniu wersji?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get rs -n lfs458-m06-quiz --no-headers | wc -l | tr -d ' '
+          mylne: ["1", "3", "4"]
+          wskazowka: "kubectl get rs -n lfs458-m06-quiz"
+
+        - pytanie: |
+            Jaki jest numer **bieżącej** rewizji tego Deploymentu?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get deploy historia -n lfs458-m06-quiz \
+                -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}'
+          mylne: ["1", "3", "0"]
+          wskazowka: "kubectl rollout history deployment/historia -n lfs458-m06-quiz"
+
+        - pytanie: |
+            Jakiego obrazu używa **stary** ReplicaSet — ten z zerem replik?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get rs -n lfs458-m06-quiz \
+                -o jsonpath='{range .items[?(@.spec.replicas==0)]}{.spec.template.spec.containers[0].image}{end}'
+          mylne: ["nginx:1.27-alpine", "nginx:latest", "nginx:1.25-alpine"]
+          wskazowka: "kubectl get rs -n lfs458-m06-quiz -o wide — kolumny IMAGES i DESIRED"

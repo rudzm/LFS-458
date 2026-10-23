@@ -1,0 +1,818 @@
+module: "08"
+title: "Volumes and Data — dane, konfiguracja i sekrety"
+chapter: 8
+chapterTitle: "Volumes and Data"
+day: 2
+environment: kind-basic
+
+intro: |
+  Sześć zadań o tym, gdzie mieszkają dane: od katalogu współdzielonego przez
+  dwa kontenery, przez trwały wolumen, po konfigurację podaną z zewnątrz obrazu.
+
+  Klaster ma domyślną klasę pamięci `standard` (provisioner `local-path`)
+  w trybie **`WaitForFirstConsumer`** — PVC będzie w `Pending`, dopóki nie
+  użyje go jakiś Pod. To nie awaria.
+
+  ```bash
+  kubectl get storageclass
+  ```
+
+cleanup:
+  - name: "Usuwam namespace lfs458-m08 (razem z PVC)"
+    timeout: 5m
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m08 --ignore-not-found --wait=true
+  - name: "Usuwam statyczny PersistentVolume modułu"
+    timeout: 2m
+    ignoreError: true
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete pv archiwum-pv --ignore-not-found
+
+tasks:
+  - id: task-1
+    points: 3
+    description: |
+      **Połącz dwa kontenery wspólnym katalogiem.**
+
+      W namespace `lfs458-m08` utwórz Poda **`wymiana`** z wolumenem
+      `emptyDir` o nazwie `robocze` i dwoma kontenerami:
+
+      | Kontener | Obraz | Montuje pod | Robi |
+      |---|---|---|---|
+      | `producent` | `busybox:1.36` | `/wyjscie` | zapisuje `raport.txt` i śpi |
+      | `konsument` | `busybox:1.36` | `/wejscie` | tylko śpi |
+
+      Plik `raport.txt` ma zawierać tekst **`dane-z-emptydir`**.
+      Po utworzeniu sprawdź, że kontener `konsument` widzi ten sam plik:
+
+      ```bash
+      kubectl exec -n lfs458-m08 wymiana -c konsument -- cat /wejscie/raport.txt
+      ```
+    hints:
+      - "Wolumen deklarujesz raz w `spec.volumes`, a montujesz osobno w każdym kontenerze przez `volumeMounts`."
+      - "Producent musi zapisać plik i **nie zakończyć się**: `command: [\"sh\",\"-c\",\"echo dane-z-emptydir > /wyjscie/raport.txt && sleep 3600\"]`."
+      - "Ten sam wolumen można zamontować pod różnymi ścieżkami w różnych kontenerach — to normalne i częste."
+      - "Szkielet:\n\n```yaml\nspec:\n  volumes:\n    - name: robocze\n      emptyDir: {}\n  containers:\n    - name: producent\n      image: busybox:1.36\n      command: [\"sh\",\"-c\",\"echo dane-z-emptydir > /wyjscie/raport.txt && sleep 3600\"]\n      volumeMounts:\n        - name: robocze\n          mountPath: /wyjscie\n    - name: konsument\n      image: busybox:1.36\n      command: [\"sleep\",\"3600\"]\n      volumeMounts:\n        - name: robocze\n          mountPath: /wejscie\n```"
+    solution: |
+      ```bash
+      kubectl create namespace lfs458-m08
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: wymiana
+        namespace: lfs458-m08
+      spec:
+        volumes:
+          - name: robocze
+            emptyDir: {}
+        containers:
+          - name: producent
+            image: busybox:1.36
+            command: ["sh","-c","echo dane-z-emptydir > /wyjscie/raport.txt && sleep 3600"]
+            volumeMounts:
+              - name: robocze
+                mountPath: /wyjscie
+          - name: konsument
+            image: busybox:1.36
+            command: ["sleep","3600"]
+            volumeMounts:
+              - name: robocze
+                mountPath: /wejscie
+      EOF
+
+      kubectl exec -n lfs458-m08 wymiana -c konsument -- cat /wejscie/raport.txt
+      ```
+    checks:
+      - name: "Pod wymiana działa i ma wolumen emptyDir"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: wymiana
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+          - path: "{.spec.volumes[*].emptyDir}"
+            op: exists
+            quantifier: any
+            message: "Pod ma mieć wolumen typu emptyDir"
+      - name: "oba kontenery montują ten sam wolumen"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: wymiana
+        assert:
+          - path: "{.spec.containers[*].volumeMounts[?(@.name=='robocze')].mountPath}"
+            count:
+              op: gte
+              value: 2
+            message: "wolumen `robocze` ma być zamontowany w obu kontenerach"
+      - name: "konsument widzi plik zapisany przez producenta"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" exec -n lfs458-m08 wymiana \
+              -c konsument -- cat /wejscie/raport.txt
+          stdoutMatches: "dane-z-emptydir"
+
+  - id: task-2
+    points: 4
+    description: |
+      **Poproś klaster o trwały wolumen.**
+
+      Utwórz w `lfs458-m08`:
+
+      1. PVC **`dane`** — `100Mi`, tryb dostępu `ReadWriteOnce`, klasa `standard`
+      2. Poda **`baza`** (obraz `busybox:1.36`, `sleep 3600`), który montuje ten
+         PVC pod `/dane` i przy starcie zapisuje tam plik `stan.txt`
+         z tekstem **`trwale`**
+
+      Zanim utworzysz Poda, sprawdź stan PVC — będzie `Pending`.
+      Sprawdź jeszcze raz po utworzeniu Poda.
+
+      > Sprawdzenie patrzy na **PVC i zawartość wolumenu**, a nie na konkretną
+      > nazwę Poda — w zadaniu 5 podmienisz Poda na inny, a dane mają zostać.
+
+      ```bash
+      kubectl get pvc,pv -n lfs458-m08
+      ```
+    hints:
+      - "PVC: `kubectl explain pvc.spec` — potrzebujesz `accessModes`, `resources.requests.storage` i `storageClassName`."
+      - "W Podzie wolumen typu PVC deklaruje się tak:\n\n```yaml\nvolumes:\n  - name: dane\n    persistentVolumeClaim:\n      claimName: dane\n```"
+      - "Polecenie kontenera: `[\"sh\",\"-c\",\"echo trwale > /dane/stan.txt && sleep 3600\"]`."
+      - "PVC w `Pending` z komunikatem `waiting for first consumer` jest poprawne — klasa `standard` ma tryb WaitForFirstConsumer i tworzy wolumen dopiero dla konkretnego Poda."
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: dane
+        namespace: lfs458-m08
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 100Mi
+      ---
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: baza
+        namespace: lfs458-m08
+      spec:
+        volumes:
+          - name: dane
+            persistentVolumeClaim:
+              claimName: dane
+        containers:
+          - name: app
+            image: busybox:1.36
+            command: ["sh","-c","echo trwale > /dane/stan.txt && sleep 3600"]
+            volumeMounts:
+              - name: dane
+                mountPath: /dane
+      EOF
+
+      kubectl get pvc,pv -n lfs458-m08
+      ```
+    checks:
+      - name: "PVC dane jest związany i ma 100Mi"
+        resource:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          namespace: lfs458-m08
+          name: dane
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Bound
+            message: "PVC wiąże się dopiero, gdy użyje go Pod — sprawdź `kubectl describe pvc dane -n lfs458-m08`"
+          - path: "{.spec.accessModes[*]}"
+            op: eq
+            value: ReadWriteOnce
+          - path: "{.spec.resources.requests.storage}"
+            op: eq
+            value: "100Mi"
+      - name: "PVC ma przypisany wolumen"
+        resource:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          namespace: lfs458-m08
+          name: dane
+        assert:
+          - path: "{.spec.volumeName}"
+            op: exists
+            message: "provisioner tworzy PV dopiero dla konkretnego Poda — uruchom Poda montującego ten PVC"
+      - name: "jakiś Pod montuje PVC dane pod /dane"
+        exec:
+          timeout: 40s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            $K get pods -n lfs458-m08 -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.volumes[*].persistentVolumeClaim.claimName}{"\n"}{end}' \
+              | awk '$2=="dane" {print "znaleziono:", $1; found=1} END {if (!found) print "brak"}'
+          stdoutMatches: "znaleziono:"
+      - name: "dane są zapisane na wolumenie"
+        exec:
+          timeout: 60s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            # Sprawdzenie celowo nie zakłada nazwy Poda: w zadaniu 5 zastąpisz go innym.
+            POD=$($K get pods -n lfs458-m08 -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.volumes[*].persistentVolumeClaim.claimName}{"\n"}{end}' \
+                  | awk '$2=="dane" {print $1; exit}')
+            [ -n "$POD" ] || { echo "żaden Pod nie montuje PVC dane"; exit 1; }
+            $K exec -n lfs458-m08 "$POD" -- cat /dane/stan.txt
+          stdoutMatches: "trwale"
+
+  - id: task-3
+    points: 4
+    description: |
+      **Podaj konfigurację na dwa sposoby naraz.**
+
+      Utwórz ConfigMapę **`ustawienia`** w `lfs458-m08` z kluczami:
+
+      | Klucz | Wartość |
+      |---|---|
+      | `TRYB` | `produkcja` |
+      | `POZIOM_LOGOW` | `debug` |
+
+      Następnie Poda **`konfiguracja`** (`busybox:1.36`, `sleep 3600`), który:
+
+      - ma zmienną środowiskową `TRYB` pobraną z tej ConfigMapy,
+      - **oraz** montuje całą ConfigMapę jako pliki w katalogu `/etc/ustawienia`.
+
+      Sprawdź oba kanały:
+
+      ```bash
+      kubectl exec -n lfs458-m08 konfiguracja -- printenv TRYB
+      kubectl exec -n lfs458-m08 konfiguracja -- cat /etc/ustawienia/POZIOM_LOGOW
+      ```
+    hints:
+      - "Zmienna z ConfigMapy: `env: [{name: TRYB, valueFrom: {configMapKeyRef: {name: ustawienia, key: TRYB}}}]`."
+      - "ConfigMapa jako wolumen: `volumes: [{name: konf, configMap: {name: ustawienia}}]`. Każdy klucz staje się osobnym plikiem."
+      - "To ten sam Pod — ma korzystać z obu sposobów jednocześnie. O to chodzi w zadaniu: zobaczyć, że dają ten sam efekt inną drogą."
+      - "Po zamontowaniu zajrzyj do katalogu: `kubectl exec -n lfs458-m08 konfiguracja -- ls -l /etc/ustawienia`. Zobaczysz dowiązania symboliczne — tak Kubernetes umożliwia podmianę plików w locie."
+    solution: |
+      ```bash
+      kubectl create configmap ustawienia -n lfs458-m08 \
+        --from-literal=TRYB=produkcja \
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: konfiguracja
+        namespace: lfs458-m08
+      spec:
+        volumes:
+          - name: konf
+            configMap:
+              name: ustawienia
+        containers:
+          - name: app
+            image: busybox:1.36
+            command: ["sleep","3600"]
+            env:
+              - name: TRYB
+                valueFrom:
+                  configMapKeyRef:
+                    name: ustawienia
+                    key: TRYB
+            volumeMounts:
+              - name: konf
+                mountPath: /etc/ustawienia
+      EOF
+      ```
+    checks:
+      - name: "ConfigMap ustawienia ma oba klucze"
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          namespace: lfs458-m08
+          name: ustawienia
+        assert:
+          - path: "{.data['TRYB']}"
+            op: eq
+            value: produkcja
+          - path: "{.data['POZIOM_LOGOW']}"
+            op: eq
+            value: debug
+      - name: "Pod pobiera zmienną środowiskową z ConfigMapy"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: konfiguracja
+        assert:
+          - path: "{.spec.containers[*].env[*].valueFrom.configMapKeyRef.name}"
+            op: eq
+            value: ustawienia
+            quantifier: any
+            message: "użyj `configMapKeyRef`, żeby wstrzyknąć pojedynczy klucz jako zmienną"
+      - name: "Pod montuje ConfigMapę jako pliki"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: konfiguracja
+        assert:
+          - path: "{.spec.volumes[*].configMap.name}"
+            op: eq
+            value: ustawienia
+            quantifier: any
+            message: "dołóż wolumen typu configMap — to drugi kanał podawania konfiguracji"
+      - name: "oba kanały działają w kontenerze"
+        exec:
+          timeout: 40s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            env_val=$($K exec -n lfs458-m08 konfiguracja -- printenv TRYB)
+            file_val=$($K exec -n lfs458-m08 konfiguracja -- cat /etc/ustawienia/POZIOM_LOGOW)
+            echo "env=$env_val plik=$file_val"
+          stdoutMatches: "env=produkcja plik=debug"
+
+  - id: task-4
+    points: 4
+    description: |
+      **Podaj poświadczenia przez Secret.**
+
+      Utwórz Secret **`poswiadczenia`** typu `Opaque` w `lfs458-m08`
+      z kluczami `uzytkownik` = `admin` i `haslo` = `tajne123`.
+
+      Potem Poda **`klient-bazy`** (`busybox:1.36`, `sleep 3600`), któremu
+      **oba** klucze trafiają jako zmienne środowiskowe o nazwach
+      `DB_USER` i `DB_PASSWORD`.
+
+      Na koniec obejrzyj, jak Secret wygląda w API:
+
+      ```bash
+      kubectl get secret poswiadczenia -n lfs458-m08 -o yaml
+      kubectl get secret poswiadczenia -n lfs458-m08 -o jsonpath='{.data.haslo}' | base64 -d
+      ```
+
+      > To, że hasło jest zakodowane `base64`, **nie znaczy, że jest chronione**.
+      > Każdy z prawem odczytu Secretów przeczyta je jednym poleceniem.
+    hints:
+      - "`kubectl create secret generic poswiadczenia -n lfs458-m08 --from-literal=uzytkownik=admin --from-literal=haslo=tajne123`"
+      - "Wstrzyknięcie klucza jako zmiennej: `env: [{name: DB_USER, valueFrom: {secretKeyRef: {name: poswiadczenia, key: uzytkownik}}}]`."
+      - "Nazwy zmiennych w Podzie (`DB_USER`, `DB_PASSWORD`) nie muszą się pokrywać z kluczami Secreta — to dwie różne przestrzenie nazw."
+    solution: |
+      ```bash
+      kubectl create secret generic poswiadczenia -n lfs458-m08 \
+        --from-literal=uzytkownik=admin \
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: klient-bazy
+        namespace: lfs458-m08
+      spec:
+        containers:
+          - name: app
+            image: busybox:1.36
+            command: ["sleep","3600"]
+            env:
+              - name: DB_USER
+                valueFrom:
+                  secretKeyRef:
+                    name: poswiadczenia
+                    key: uzytkownik
+              - name: DB_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: poswiadczenia
+                    key: haslo
+      EOF
+      ```
+    checks:
+      - name: "Secret poswiadczenia istnieje i jest typu Opaque"
+        resource:
+          apiVersion: v1
+          kind: Secret
+          namespace: lfs458-m08
+          name: poswiadczenia
+        assert:
+          - path: "{.type}"
+            op: eq
+            value: Opaque
+          - path: "{.data['uzytkownik']}"
+            op: exists
+            message: "Secret ma zawierać klucz `uzytkownik`"
+          - path: "{.data['haslo']}"
+            op: exists
+      - name: "Pod klient-bazy pobiera oba klucze z Secreta"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: klient-bazy
+        assert:
+          - path: "{.spec.containers[*].env[*].valueFrom.secretKeyRef.name}"
+            op: eq
+            value: poswiadczenia
+            quantifier: all
+            count:
+              op: gte
+              value: 2
+            message: "obie zmienne mają pochodzić z Secreta `poswiadczenia`"
+          - path: "{.spec.containers[*].env[*].name}"
+            op: eq
+            value: DB_PASSWORD
+            quantifier: any
+      - name: "zmienne są widoczne w kontenerze"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" exec -n lfs458-m08 klient-bazy \
+              -- sh -c 'echo "$DB_USER/$DB_PASSWORD"'
+          stdoutMatches: "admin/tajne123"
+
+  - id: task-5
+    points: 4
+    description: |
+      **Zamontuj Secret jako pliki — i zobacz różnicę.**
+
+      Zmienna środowiskowa to nie jedyny sposób podania sekretu, i zwykle
+      nie najlepszy: wyciekają przez `kubectl describe pod`, listę procesów
+      i logi awaryjne aplikacji. **Plik jest bezpieczniejszy i odświeżalny.**
+
+      Trzy rzeczy do zrobienia w `lfs458-m08`:
+
+      1. Secret **`certyfikat`** utworzony manifestem z polem **`stringData`**
+         (nie `data` — żadnego kodowania `base64` ręcznie), z kluczami
+         `klucz.pem` i `cert.pem`; treść dowolna.
+      2. Pod **`czytelnik-sekretu`** (`busybox:1.36`, `sleep 3600`), który
+         montuje ten Secret w **`/etc/tls`** jako **tylko do odczytu**,
+         z uprawnieniami plików **`0400`**.
+      3. Sprawdź, co naprawdę powstało w kontenerze:
+
+      ```bash
+      kubectl exec -n lfs458-m08 czytelnik-sekretu -- ls -lL /etc/tls
+      kubectl exec -n lfs458-m08 czytelnik-sekretu -- ls -la /etc/tls
+      ```
+
+      > Drugie polecenie pokaże katalog `..data` i linki symboliczne. To nie
+      > przypadek: kubelet podmienia cały katalog atomowo, dzięki czemu
+      > aktualizacja Secreta dociera do działającego Poda **bez restartu**
+      > (dla montowań, nie dla zmiennych środowiskowych).
+    hints:
+      - "`stringData` przyjmuje wartości jawnym tekstem — serwer API sam je zakoduje i w `kubectl get -o yaml` zobaczysz już `data`."
+      - "Montowanie: `volumes: [{name: tls, secret: {secretName: certyfikat, defaultMode: 0400}}]` i `volumeMounts: [{name: tls, mountPath: /etc/tls, readOnly: true}]`."
+      - "`defaultMode` zapisuj w YAML-u **ósemkowo z zerem na początku** (`0400`). Bez zera `400` to liczba dziesiętna i uprawnienia wyjdą inne, niż myślisz."
+      - "Uprawnień sprawdzaj przez `ls -lL` (z `-L`), bo bez tego widzisz prawa linku symbolicznego, nie pliku."
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: certyfikat
+        namespace: lfs458-m08
+      type: Opaque
+      stringData:
+        klucz.pem: |
+          -----BEGIN PRIVATE KEY-----
+          to-nie-jest-prawdziwy-klucz
+          -----END PRIVATE KEY-----
+        cert.pem: |
+          -----BEGIN CERTIFICATE-----
+          to-nie-jest-prawdziwy-certyfikat
+          -----END CERTIFICATE-----
+      ---
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: czytelnik-sekretu
+        namespace: lfs458-m08
+      spec:
+        containers:
+          - name: app
+            image: busybox:1.36
+            command: ["sleep","3600"]
+            volumeMounts:
+              - name: tls
+                mountPath: /etc/tls
+                readOnly: true
+        volumes:
+          - name: tls
+            secret:
+              secretName: certyfikat
+              defaultMode: 0400
+      EOF
+
+      kubectl exec -n lfs458-m08 czytelnik-sekretu -- ls -lL /etc/tls
+      # -r--------  1 root root ... cert.pem
+      # -r--------  1 root root ... klucz.pem
+      ```
+
+      Dlaczego `stringData`: zapisujesz jawny tekst, a serwer API koduje go
+      sam. Pole jest **tylko do zapisu** — przy odczycie widzisz już `data`
+      z `base64`. To eliminuje najczęstszy błąd ręcznych manifestów:
+      `echo "haslo" | base64` dokleja znak nowej linii i aplikacja dostaje
+      hasło z `\n` na końcu.
+    checks:
+      - name: "Secret certyfikat ma oba klucze"
+        resource:
+          apiVersion: v1
+          kind: Secret
+          namespace: lfs458-m08
+          name: certyfikat
+        assert:
+          - path: "{.data['klucz\\.pem']}"
+            op: exists
+            message: "brak klucza `klucz.pem` — zwróć uwagę, że kropka jest częścią nazwy klucza"
+          - path: "{.data['cert\\.pem']}"
+            op: exists
+      - name: "Pod montuje Secret w /etc/tls tylko do odczytu"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: czytelnik-sekretu
+        assert:
+          - path: "{.spec.volumes[*].secret.secretName}"
+            op: eq
+            value: certyfikat
+            quantifier: any
+            message: "żaden wolumen Poda nie pochodzi z Secreta `certyfikat`"
+          - path: "{.spec.containers[*].volumeMounts[?(@.mountPath=='/etc/tls')].readOnly}"
+            op: eq
+            value: "true"
+            message: "montowanie ma być `readOnly: true`"
+          - path: "{.spec.volumes[*].secret.defaultMode}"
+            op: eq
+            value: "256"
+            quantifier: any
+            message: "`defaultMode` ma dać uprawnienia 0400 — w API zobaczysz je dziesiętnie jako 256"
+      - name: "pliki w kontenerze mają prawa 0400"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" exec -n lfs458-m08 \
+              czytelnik-sekretu -- ls -lL /etc/tls 2>/dev/null \
+              | awk '/cert[.]pem/ {print "WYNIK: " $1}'
+          stdoutMatches: "WYNIK: -r--------"
+
+  - id: task-6
+    points: 3
+    description: |
+      **Udowodnij trwałość.**
+
+      Usuń Poda `baza` z zadania 2 i utwórz go ponownie —
+      **ale bez zapisywania pliku**. Nowy Pod ma nazywać się `baza-2`,
+      montować **ten sam PVC** `dane` pod `/dane` i tylko spać.
+
+      Jeśli wolumen jest naprawdę trwały, `stan.txt` z zadania 2 wciąż tam będzie.
+
+      ```bash
+      kubectl delete pod baza -n lfs458-m08
+      # …utwórz baza-2…
+      kubectl exec -n lfs458-m08 baza-2 -- cat /dane/stan.txt
+      ```
+    hints:
+      - "Nowy Pod różni się od poprzedniego tylko nazwą i poleceniem: ma być `[\"sleep\",\"3600\"]` bez zapisu pliku."
+      - "PVC jest ten sam — `claimName: dane`. To on trzyma wolumen przy życiu, nie Pod."
+      - "PVC z trybem ReadWriteOnce nie pozwoli zamontować wolumenu dwóm Podom na różnych node'ach jednocześnie. Usuń stary Pod **przed** utworzeniem nowego."
+    solution: |
+      ```bash
+      kubectl delete pod baza -n lfs458-m08 --wait=true
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: baza-2
+        namespace: lfs458-m08
+      spec:
+        volumes:
+          - name: dane
+            persistentVolumeClaim:
+              claimName: dane
+        containers:
+          - name: app
+            image: busybox:1.36
+            command: ["sleep","3600"]
+            volumeMounts:
+              - name: dane
+                mountPath: /dane
+      EOF
+
+      kubectl exec -n lfs458-m08 baza-2 -- cat /dane/stan.txt
+      ```
+    checks:
+      - name: "stary Pod baza już nie istnieje"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: baza
+          mustNotExist: true
+      - name: "Pod baza-2 działa i montuje ten sam PVC"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: baza-2
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+          - path: "{.spec.volumes[*].persistentVolumeClaim.claimName}"
+            op: eq
+            value: dane
+      - name: "dane przetrwały usunięcie Poda"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" exec -n lfs458-m08 baza-2 \
+              -- cat /dane/stan.txt
+          stdoutMatches: "trwale"
+
+  - id: task-7
+    points: 3
+    optional: true
+    description: |
+      **Zrób to, co normalnie robi provisioner.**
+
+      Zadanie dodatkowe: utwórz PersistentVolume **ręcznie** i zwiąż z nim PVC.
+
+      1. PV **`archiwum-pv`** (zasób **klastrowy** — bez namespace):
+         `500Mi`, `ReadWriteOnce`, `hostPath: /tmp/archiwum`,
+         `storageClassName: ""`, `persistentVolumeReclaimPolicy: Retain`
+      2. PVC **`archiwum`** w `lfs458-m08`: `200Mi`, `ReadWriteOnce`,
+         `storageClassName: ""`
+
+      Puste `storageClassName` wyłącza dynamiczne tworzenie — PVC szuka wtedy
+      pasującego PV wśród istniejących.
+    hints:
+      - "PV nie ma namespace. Jeśli wpiszesz `namespace:` w metadanych, API to zignoruje."
+      - "Puste `storageClassName: \"\"` musi być w **obu** obiektach. Pominięcie pola to co innego niż pusty łańcuch — wtedy zadziała klasa domyślna."
+      - "PVC może prosić o mniej niż oferuje PV (200Mi z 500Mi) — wiązanie i tak zadziała, po prostu marnujesz resztę."
+      - "Sprawdź: `kubectl get pv archiwum-pv` — status ma być `Bound`, a kolumna CLAIM ma wskazywać `lfs458-m08/archiwum`."
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: PersistentVolume
+      metadata:
+        name: archiwum-pv
+      spec:
+        capacity:
+          storage: 500Mi
+        accessModes: [ReadWriteOnce]
+        persistentVolumeReclaimPolicy: Retain
+        storageClassName: ""
+        hostPath:
+          path: /tmp/archiwum
+      ---
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: archiwum
+        namespace: lfs458-m08
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: ""
+        resources:
+          requests:
+            storage: 200Mi
+      EOF
+
+      kubectl get pv archiwum-pv
+      ```
+    checks:
+      - name: "PV archiwum-pv istnieje z polityką Retain"
+        resource:
+          apiVersion: v1
+          kind: PersistentVolume
+          name: archiwum-pv
+        assert:
+          - path: "{.spec.capacity.storage}"
+            op: eq
+            value: "500Mi"
+          - path: "{.spec.persistentVolumeReclaimPolicy}"
+            op: eq
+            value: Retain
+            message: "na produkcji Retain chroni dane przed usunięciem razem z PVC"
+      - name: "PVC archiwum jest związany z tym PV"
+        resource:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          namespace: lfs458-m08
+          name: archiwum
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Bound
+            message: "PVC bez klasy szuka pasującego PV; sprawdź `kubectl describe pvc archiwum -n lfs458-m08`"
+          - path: "{.spec.volumeName}"
+            op: eq
+            value: archiwum-pv
+            message: "PVC powinien związać się właśnie z `archiwum-pv`"
+
+  - id: task-8
+    points: 3
+    optional: true
+    description: |
+      **(dodatkowe) Dostęp do prywatnego rejestru.**
+
+      Obrazy z prywatnego rejestru wymagają osobnego typu Secreta:
+      **`kubernetes.io/dockerconfigjson`**. Nie da się go zrobić przez
+      `create secret generic` — `kubectl` ma na to własne podpolecenie.
+
+      W `lfs458-m08`:
+
+      1. Secret **`rejestr`** typu `kubernetes.io/dockerconfigjson`
+         dla serwera `rejestr.firma.local`, użytkownik `kursant`,
+         hasło `tajne123`.
+      2. Pod **`z-rejestru`** (`nginx:1.27-alpine`), który wskazuje ten
+         Secret w **`imagePullSecrets`**.
+
+      > Obraz bierzemy publiczny, żeby Pod naprawdę wstał. `imagePullSecrets`
+      > jest po prostu ignorowane, gdy rejestr nie żąda uwierzytelnienia —
+      > ćwiczymy **poprawne podłączenie**, nie prywatny rejestr.
+
+      Zajrzyj na koniec, co właściwie powstało:
+
+      ```bash
+      kubectl get secret rejestr -n lfs458-m08 \
+        -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d
+      ```
+    hints:
+      - "`kubectl create secret docker-registry` — nie `generic`. Przyjmuje `--docker-server`, `--docker-username`, `--docker-password`."
+      - "W Podzie to pole na poziomie `spec`, obok `containers`: `imagePullSecrets: [{name: rejestr}]`."
+      - "Nazwa klucza w Secrecie zaczyna się od kropki (`.dockerconfigjson`), więc w jsonpath trzeba ją wyescapować."
+      - "Alternatywa dla pojedynczych Podów: przypisanie `imagePullSecrets` do ServiceAccounta — wtedy dziedziczy je każdy Pod w namespace."
+    solution: |
+      ```bash
+      kubectl create secret docker-registry rejestr -n lfs458-m08 \
+        --docker-server=rejestr.firma.local \
+        --docker-username=kursant \
+        --docker-password=tajne123
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: z-rejestru
+        namespace: lfs458-m08
+      spec:
+        imagePullSecrets:
+          - name: rejestr
+        containers:
+          - name: web
+            image: nginx:1.27-alpine
+      EOF
+      ```
+
+      W praktyce rzadko przypisuje się to Podom pojedynczo. Wygodniej dopiąć
+      Secret do ServiceAccounta — wtedy każdy Pod używający tego konta
+      dziedziczy go automatycznie:
+
+      ```bash
+      kubectl patch serviceaccount default -n lfs458-m08 \
+        -p '{"imagePullSecrets":[{"name":"rejestr"}]}'
+      ```
+    checks:
+      - name: "Secret rejestr jest typu dockerconfigjson"
+        resource:
+          apiVersion: v1
+          kind: Secret
+          namespace: lfs458-m08
+          name: rejestr
+        assert:
+          - path: "{.type}"
+            op: eq
+            value: "kubernetes.io/dockerconfigjson"
+            message: "ten typ powstaje przez `kubectl create secret docker-registry`, nie `generic`"
+          - path: "{.data['\\.dockerconfigjson']}"
+            op: exists
+      - name: "Secret wskazuje właściwy rejestr"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" get secret rejestr \
+              -n lfs458-m08 -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null \
+              | base64 -d
+          stdoutMatches: "rejestr[.]firma[.]local"
+      - name: "Pod z-rejestru używa tego Secreta i działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: z-rejestru
+        assert:
+          - path: "{.spec.imagePullSecrets[*].name}"
+            op: eq
+            value: rejestr
+            quantifier: any
+            message: "Pod nie ma `imagePullSecrets` wskazującego na `rejestr`"
+          - path: "{.status.phase}"
+            op: eq
+            value: Running

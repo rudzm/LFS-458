@@ -1,0 +1,11 @@
+themeSet: ./slides/theme
+allowLocalFiles: true
+# Zezwolenie na surowy HTML w Markdownie — potrzebne dla <div class="cols">
+# i innych klas pomocniczych motywu.
+html: true
+options:
+  markdown:
+    breaks: false
+# Uwaga: NIE dodawaj tu `pdf:` ani `pdfOutlines:` — obecność tych kluczy
+# przełącza marp-cli na eksport PDF także w celach, które mają dać HTML.
+# Zakładki w PDF włącza flaga --pdf-outlines w celu `slides`.

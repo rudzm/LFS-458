@@ -1,0 +1,418 @@
+module: "07"
+title: "Helm and Kustomize — pakowanie i warianty"
+chapter: 7
+chapterTitle: "Helm and Kustomize"
+day: 2
+environment: kind-basic
+
+intro: |
+  Dwa narzędzia do tego samego problemu: jeden zestaw manifestów, wiele
+  środowisk. Najpierw szablony (Helm), potem nakładki (Kustomize).
+
+  Będziesz tworzyć pliki na dysku. Zaproponowany katalog roboczy:
+
+  ```bash
+  mkdir -p ~/lfs458-m07 && cd ~/lfs458-m07
+  ```
+
+  > Weryfikator patrzy na **stan klastra**, nie na układ plików. Pliki są
+  > środkiem, nie celem — możesz je organizować, jak chcesz.
+
+cleanup:
+  - name: "Usuwam arkusz odpowiedzi"
+    timeout: 30s
+    ignoreError: true
+    script: |
+      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-07.txt"
+      echo "arkusz usunięty"
+  - name: "Odinstalowuję wydania Helma"
+    timeout: 5m
+    ignoreError: true
+    script: |
+      helm uninstall sklep-prod -n lfs458-m07 2>/dev/null || true
+      echo "wydania Helma usunięte"
+  - name: "Usuwam namespace lfs458-m07"
+    timeout: 5m
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m07 --ignore-not-found --wait=true
+
+tasks:
+  - id: task-1
+    points: 4
+    description: |
+      **Zbuduj chart i zainstaluj z niego wydanie.**
+
+      1. Wygeneruj szkielet chartu o nazwie **`sklep`** (`helm create`)
+      2. Zainstaluj z niego wydanie **`sklep-prod`** w namespace
+         **`lfs458-m07`** (utwórz namespace przy instalacji), ustawiając:
+         - `replicaCount` na **2**
+         - obraz na `nginx` w wersji **`1.27-alpine`**
+
+      Domyślny chart z `helm create` używa `readinessProbe` na `/`,
+      co nginxowi odpowiada — nie trzeba nic więcej zmieniać.
+
+      ```bash
+      helm list -n lfs458-m07
+      kubectl get deploy -n lfs458-m07
+      ```
+    hints:
+      - "`helm create sklep` tworzy katalog z gotowym, działającym chartem. Nie musisz go edytować — wartości nadpiszesz z wiersza poleceń."
+      - "Wartości nadpisuje się flagą `--set`, np. `--set replicaCount=2`. Ścieżki odpowiadają strukturze `values.yaml` — zajrzyj do niego."
+      - "Obraz w domyślnym charcie siedzi pod `image.repository` i `image.tag`."
+      - "Komplet:\n\n```bash\nhelm create sklep\nhelm install sklep-prod ./sklep -n lfs458-m07 --create-namespace \\\n  --set replicaCount=2 \\\n  --set image.repository=nginx \\\n  --set image.tag=1.27-alpine\n```"
+    solution: |
+      ```bash
+      mkdir -p ~/lfs458-m07 && cd ~/lfs458-m07
+      helm create sklep
+
+      helm install sklep-prod ./sklep -n lfs458-m07 --create-namespace \
+        --set replicaCount=2 \
+        --set image.repository=nginx \
+        --set image.tag=1.27-alpine
+
+      helm list -n lfs458-m07
+      kubectl get deploy,pods -n lfs458-m07
+      ```
+    checks:
+      - name: "wydanie sklep-prod jest zainstalowane"
+        exec:
+          timeout: 60s
+          script: |
+            helm list -n lfs458-m07 -o json 2>/dev/null \
+              | tr ',' '\n' | grep -E '"(name|status)"' || echo "brak wydan"
+          stdoutMatches: '"name":"sklep-prod"'
+      - name: "Helm trzyma stan wydania w Secretach namespace'u"
+        resource:
+          apiVersion: v1
+          kind: Secret
+          namespace: lfs458-m07
+          labelSelector: "owner=helm,name=sklep-prod"
+        assert:
+          - path: "{.items[*].metadata.name}"
+            count:
+              op: gte
+              value: 1
+            message: "każda rewizja Helma to osobny Secret — `kubectl get secrets -n lfs458-m07 -l owner=helm`"
+      - name: "Deployment z chartu ma 2 gotowe repliki na właściwym obrazie"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m07
+          labelSelector: "app.kubernetes.io/instance=sklep-prod"
+        assert:
+          - path: "{.items[*].spec.template.spec.containers[*].image}"
+            op: contains
+            value: "nginx:1.27-alpine"
+            quantifier: any
+            message: "ustaw `image.repository=nginx` i `image.tag=1.27-alpine`"
+          - path: "{.items[*].status.readyReplicas}"
+            op: eq
+            value: 2
+            message: "ustaw `replicaCount=2` i poczekaj, aż obie repliki będą Ready"
+
+  - id: task-2
+    points: 4
+    description: |
+      **Zaktualizuj wydanie i wycofaj je.**
+
+      1. Podnieś `replicaCount` do **4** przez `helm upgrade`
+      2. Sprawdź historię wydania
+      3. **Wycofaj** wydanie do rewizji **1** — po operacji mają znów działać
+         **2 repliki**
+
+      ```bash
+      helm history sklep-prod -n lfs458-m07
+      ```
+
+      > Zwróć uwagę: `helm rollback` tworzy **nową rewizję** o zawartości
+      > starej, tak samo jak `kubectl rollout undo` w module 06.
+    hints:
+      - "`helm upgrade sklep-prod ./sklep -n lfs458-m07 --set replicaCount=4 --reuse-values` zachowa wcześniejsze ustawienia obrazu."
+      - "Bez `--reuse-values` Helm wraca do wartości domyślnych chartu dla wszystkiego, co nie zostało podane ponownie. To najczęstsza pułapka przy upgrade."
+      - "`helm history sklep-prod -n lfs458-m07` pokaże listę rewizji z ich statusem."
+      - "`helm rollback sklep-prod 1 -n lfs458-m07`"
+    solution: |
+      ```bash
+      cd ~/lfs458-m07
+      helm upgrade sklep-prod ./sklep -n lfs458-m07 --reuse-values --set replicaCount=4
+      helm history sklep-prod -n lfs458-m07
+
+      helm rollback sklep-prod 1 -n lfs458-m07
+      helm history sklep-prod -n lfs458-m07
+      kubectl get deploy -n lfs458-m07
+      ```
+    checks:
+      - name: "wydanie ma co najmniej trzy rewizje w historii"
+        resource:
+          apiVersion: v1
+          kind: Secret
+          namespace: lfs458-m07
+          labelSelector: "owner=helm,name=sklep-prod"
+        assert:
+          - path: "{.items[*].metadata.name}"
+            count:
+              op: gte
+              value: 3
+            message: "instalacja, upgrade i rollback dają trzy rewizje — każda to osobny Secret"
+      - name: "po wycofaniu wydanie jest w stanie deployed"
+        exec:
+          timeout: 60s
+          script: |
+            helm status sklep-prod -n lfs458-m07 2>/dev/null | grep -i '^STATUS' || echo "brak"
+          stdoutMatches: "(?i)deployed"
+      - name: "liczba replik wróciła do 2"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m07
+          labelSelector: "app.kubernetes.io/instance=sklep-prod"
+        assert:
+          - path: "{.items[*].spec.replicas}"
+            op: eq
+            value: 2
+            message: "`helm rollback sklep-prod 1` powinien przywrócić stan z pierwszej rewizji"
+
+  - id: task-3
+    points: 4
+    description: |
+      **Zbuduj bazę i nakładkę Kustomize.**
+
+      Bez Helma i bez szablonów. Utwórz:
+
+      **`base/`** — zwykły Deployment `web` (`nginx:1.27-alpine`, 1 replika,
+      etykieta `app=web`) plus `kustomization.yaml` wskazujący ten plik.
+
+      **`overlays/produkcja/`** — `kustomization.yaml`, który:
+
+      | Ustawienie | Wartość |
+      |---|---|
+      | `namespace` | `lfs458-m07` |
+      | `nameSuffix` | `-produkcja` |
+      | `replicas` dla `web` | **3** |
+      | `resources` | `../../base` |
+
+      Zastosuj nakładkę i sprawdź efekt:
+
+      ```bash
+      kubectl kustomize overlays/produkcja
+      kubectl apply -k overlays/produkcja
+      kubectl get deploy -n lfs458-m07
+      ```
+
+      Powstały Deployment ma nazywać się **`web-produkcja`**.
+    hints:
+      - "`kustomization.yaml` ma zawsze `apiVersion: kustomize.config.k8s.io/v1beta1` i `kind: Kustomization`."
+      - "W bazie wystarczy lista `resources: [deployment.yaml]`. Plik `deployment.yaml` to zwykły, poprawny manifest — bez żadnych znaczników."
+      - "Liczbę replik zmienia się deklaratywnie:\n\n```yaml\nreplicas:\n  - name: web\n    count: 3\n```\n\nNazwa odnosi się do nazwy zasobu **w bazie**, przed dodaniem sufiksu."
+      - "Zawsze najpierw `kubectl kustomize <katalog>` — zobaczysz wynik bez wysyłania go do klastra."
+    solution: |
+      ```bash
+      cd ~/lfs458-m07
+      mkdir -p base overlays/produkcja
+
+      cat > base/deployment.yaml <<'EOF'
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: web
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: web
+        template:
+          metadata:
+            labels:
+              app: web
+          spec:
+            containers:
+              - name: web
+                image: nginx:1.27-alpine
+      EOF
+
+      cat > base/kustomization.yaml <<'EOF'
+      apiVersion: kustomize.config.k8s.io/v1beta1
+      kind: Kustomization
+      resources:
+        - deployment.yaml
+      EOF
+
+      cat > overlays/produkcja/kustomization.yaml <<'EOF'
+      apiVersion: kustomize.config.k8s.io/v1beta1
+      kind: Kustomization
+      namespace: lfs458-m07
+      nameSuffix: -produkcja
+      resources:
+        - ../../base
+      replicas:
+        - name: web
+          count: 3
+      EOF
+
+      kubectl kustomize overlays/produkcja
+      kubectl apply -k overlays/produkcja
+      ```
+    checks:
+      - name: "Deployment web-produkcja powstał z nakładki"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m07
+          name: web-produkcja
+        assert:
+          - path: "{.spec.template.spec.containers[*].image}"
+            op: eq
+            value: "nginx:1.27-alpine"
+            message: "obraz ma pochodzić z bazy — nakładka go nie zmienia"
+      - name: "nakładka podniosła liczbę replik do 3"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m07
+          name: web-produkcja
+        assert:
+          - path: "{.spec.replicas}"
+            op: eq
+            value: 3
+            message: "użyj sekcji `replicas` w kustomization.yaml nakładki"
+          - path: "{.status.readyReplicas}"
+            op: eq
+            valuePath: "{.spec.replicas}"
+            message: "poczekaj, aż wszystkie repliki będą Ready"
+      - name: "baza nie została zastosowana bezpośrednio"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m07
+          name: web
+          mustNotExist: true
+
+  - id: task-4
+    points: 3
+    description: |
+      **Użyj generatora ConfigMap.**
+
+      Dodaj do nakładki `overlays/produkcja` **`configMapGenerator`**
+      tworzący ConfigMapę o nazwie **`ustawienia`** z kluczem
+      `TRYB=produkcja`.
+
+      Zastosuj nakładkę ponownie i przyjrzyj się nazwie powstałej ConfigMapy.
+
+      ```bash
+      kubectl get cm -n lfs458-m07
+      ```
+
+      Nie będzie się nazywać `ustawienia`. Kustomize doda **hasz treści**,
+      a ponieważ nakładka ustawia `nameSuffix`, dostaniesz coś w rodzaju
+      `ustawienia-produkcja-9f8c7b6d5t`.
+
+      Hasz jest celowy: zmiana zawartości zmienia nazwę, a zmiana nazwy
+      w szablonie Poda wywołuje **rollout**. Zwykła ConfigMapa tego nie robi:
+      podmieniasz zawartość, a działające Pody dalej trzymają starą — zobaczysz
+      to w module 08.
+    hints:
+      - "```yaml\nconfigMapGenerator:\n  - name: ustawienia\n    literals:\n      - TRYB=produkcja\n```"
+      - "Sekcja idzie do `kustomization.yaml` **nakładki**, obok `resources` i `replicas`."
+      - "Po `kubectl apply -k` sprawdź `kubectl get cm -n lfs458-m07`. Sufiks to hasz — nie wpisuj go ręcznie, Kustomize wylicza go sam."
+    solution: |
+      ```bash
+      cd ~/lfs458-m07
+      cat >> overlays/produkcja/kustomization.yaml <<'EOF'
+      configMapGenerator:
+        - name: ustawienia
+          literals:
+            - TRYB=produkcja
+      EOF
+
+      kubectl apply -k overlays/produkcja
+      kubectl get cm -n lfs458-m07
+      ```
+    checks:
+      - name: "powstała ConfigMapa z haszem treści w nazwie"
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          namespace: lfs458-m07
+        assert:
+          - path: "{.items[*].metadata.name}"
+            op: matches
+            value: "^ustawienia(-produkcja)?-[0-9a-z]{6,}$"
+            quantifier: any
+            message: "Kustomize dokleja do nazwy hasz tresci (a nakladka jeszcze swoj nameSuffix) — nie wylaczaj tego przez disableNameSuffixHash"
+      - name: "ConfigMapa zawiera oczekiwaną wartość"
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          namespace: lfs458-m07
+        assert:
+          - path: "{.items[*].data['TRYB']}"
+            op: eq
+            value: produkcja
+            quantifier: any
+            message: "generator ma utworzyć klucz TRYB o wartości produkcja"
+
+  - id: task-5
+    points: 3
+    optional: true
+    description: |
+      **Sprawdź chart, zanim trafi do klastra.**
+
+      Zadanie dodatkowe. Wykonaj na swoim charcie `sklep`:
+
+      1. `helm lint` — kontrola poprawności
+      2. `helm template` z `replicaCount=7` — renderowanie **bez instalacji**
+
+      Zapisz obserwację w arkuszu **`~/odpowiedzi/lab-07.txt`**:
+
+      | Klucz | Co ma zawierać |
+      |---|---|
+      | `lint` | wynik `helm lint` jednym słowem: `ok` albo `blad` |
+      | `repliki-w-szablonie` | ile replik było w wyrenderowanym manifeście |
+      | `repliki-w-klastrze` | ile replik ma faktycznie działające wydanie |
+
+      Ostatnie dwie liczby mają się **różnić** — i o to chodzi.
+      `helm template` niczego nie instaluje.
+    hints:
+      - "`helm lint ./sklep` kończy się komunikatem o liczbie znalezionych problemów."
+      - "`helm template sklep-prod ./sklep --set replicaCount=7 | grep -A1 replicas` pokaże wartość w wyrenderowanym manifeście."
+      - "Liczbę replik działającego wydania sprawdzisz w klastrze: `kubectl get deploy -n lfs458-m07 -l app.kubernetes.io/instance=sklep-prod`."
+    solution: |
+      ```bash
+      cd ~/lfs458-m07
+      helm lint ./sklep
+      helm template sklep-prod ./sklep --set replicaCount=7 | grep -m1 -A1 'replicas'
+
+      kubectl get deploy -n lfs458-m07 -l app.kubernetes.io/instance=sklep-prod \
+        -o jsonpath='{.items[0].spec.replicas}{"\n"}'
+
+      cat >> ~/odpowiedzi/lab-07.txt <<'EOF'
+      lint=ok
+      repliki-w-szablonie=7
+      repliki-w-klastrze=2
+      EOF
+      ```
+    checks:
+      - name: "zapisano wynik kontroli chartu"
+        exec:
+          timeout: 30s
+          script: |
+            O() { "$LFS458_ROOT"/scripts/odpowiedz.sh 07 "$1"; }
+            echo "lint=$(O lint) szablon=$(O repliki-w-szablonie)"
+          stdoutMatches: "lint=ok szablon=7$"
+      - name: "widać różnicę między szablonem a stanem klastra"
+        exec:
+          timeout: 40s
+          script: |
+            PODANO=$("$LFS458_ROOT"/scripts/odpowiedz.sh 07 repliki-w-klastrze)
+            ILE=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" get deploy -n lfs458-m07 \
+                    -l app.kubernetes.io/instance=sklep-prod -o jsonpath='{.items[0].spec.replicas}')
+            echo "podano=$PODANO faktycznie=$ILE"
+          stdoutMatches: "podano=([0-9]+) faktycznie=\\1$"
+          message: "`helm template` tylko renderuje — w klastrze nadal działają repliki z zadania 2"
+      - name: "chart faktycznie przechodzi helm lint"
+        exec:
+          timeout: 60s
+          script: |
+            cd "${LFS458_M07_DIR:-$HOME/lfs458-m07}" 2>/dev/null || { echo "brak katalogu roboczego"; exit 1; }
+            helm lint ./sklep 2>&1 | tail -2
+          stdoutMatches: "0 chart\\(s\\) failed"

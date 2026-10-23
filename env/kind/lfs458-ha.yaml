@@ -1,0 +1,29 @@
+# Klaster HA — tylko moduł 15 (High Availability).
+#
+# Trzy węzły control plane ze stacked etcd. Kind sam dostawia przed nimi
+# load balancer HAProxy w kontenerze lfs458-ha-external-load-balancer.
+# Węzłów roboczych nie ma celowo: do kworum i kopii zapasowej etcd nie są
+# potrzebne, a każdy dodatkowy węzeł to kolejne ~700 MiB RAM na stanowisku.
+#
+#   kontekst:        kind-lfs458-ha
+#   pierwszy węzeł:  lfs458-ha-control-plane   (moduł 15 zdejmuje z niego taint)
+#
+# Uwaga przy 8 GiB RAM: najpierw usuń klaster podstawowy. Dwa klastry Kind
+# naraz wyczerpują zwykle limity inotify, co objawia się komunikatem
+# „too many open files" przy tworzeniu drugiego.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: lfs458-ha
+
+networking:
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/16"
+  kubeProxyMode: "iptables"
+
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5

@@ -1,0 +1,126 @@
+/* @theme lfs458 */
+/*
+ * Motyw szkoleniowy LFS458.
+ * Założenie: slajd ma być czytelny z ostatniego rzędu, więc minimalny rozmiar
+ * tekstu to 22 px, a kod nigdy nie schodzi poniżej 20 px.
+ *
+ * Klasy pomocnicze (nadajesz je slajdowi przez `<!-- _class: nazwa -->`):
+ *   tytul    — slajd tytułowy modułu
+ *   sekcja   — przerywnik między częściami
+ *   lab      — slajd zapowiadający laba (zielony akcent)
+ *   ciemny   — odwrócone kolory, np. na demo
+ * Układ dwukolumnowy: <div class="kolumny"> … </div> (dwa bloki w środku).
+ */
+
+@import 'default';
+
+:root {
+  --tlo:        #ffffff;
+  --tekst:      #1b2430;
+  --akcent:     #2d6cdf;   /* niebieski — nagłówki i linki            */
+  --akcent-lab: #1f9d55;   /* zielony — wszystko, co dotyczy labów    */
+  --szary:      #5b6878;
+  --kod-tlo:    #f4f6f9;
+  --ramka:      #dde3ec;
+
+  font-family: "Inter", "Segoe UI", "Noto Sans", system-ui, sans-serif;
+  font-size: 26px;
+  background: var(--tlo);
+  color: var(--tekst);
+}
+
+section {
+  padding: 46px 64px 58px;
+  justify-content: flex-start;
+}
+
+h1 { font-size: 1.62em; color: var(--akcent); margin: 0 0 .36em; line-height: 1.12; }
+h2 { font-size: 1.24em; color: var(--tekst); margin: 0 0 .42em; }
+h3 { font-size: 1.04em; color: var(--szary); margin: 0 0 .3em; font-weight: 600; }
+
+/* Kreska pod tytułem slajdu — porządkuje stronę bez dodatkowej grafiki. */
+section > h1::after {
+  content: ""; display: block; width: 72px; height: 4px;
+  background: var(--akcent); margin-top: .24em; border-radius: 2px;
+}
+
+ul, ol { margin: .1em 0; padding-left: 1.05em; }
+p { margin: .35em 0; }
+li { margin: .18em 0; }
+li::marker { color: var(--akcent); }
+
+strong { color: var(--akcent); font-weight: 650; }
+em { color: var(--szary); font-style: normal; font-weight: 500; }
+
+code {
+  font-family: "JetBrains Mono", "Fira Code", "Noto Sans Mono", monospace;
+  background: var(--kod-tlo);
+  border: 1px solid var(--ramka);
+  border-radius: 4px;
+  padding: .06em .32em;
+  font-size: .86em;
+}
+
+pre {
+  background: var(--kod-tlo);
+  border: 1px solid var(--ramka);
+  border-left: 4px solid var(--akcent);
+  border-radius: 6px;
+  padding: .52em .8em;
+  font-size: .78em;          /* ≈ 20 px — dolna granica czytelności */
+  line-height: 1.34;
+  overflow-x: auto;
+}
+pre code { background: none; border: 0; padding: 0; font-size: 1em; }
+
+table { border-collapse: collapse; font-size: .80em; width: 100%; }
+th { background: var(--kod-tlo); color: var(--tekst); text-align: left; font-weight: 650; }
+th, td { border: 1px solid var(--ramka); padding: .28em .55em; }
+
+blockquote {
+  border-left: 4px solid var(--akcent-lab);
+  background: #f2faf5;
+  margin: .42em 0; padding: .4em .8em;
+  color: var(--tekst); font-size: .90em;
+}
+blockquote::before { content: none; }
+
+a { color: var(--akcent); text-decoration: none; border-bottom: 1px solid var(--ramka); }
+
+/* ——— układ dwukolumnowy ——————————————————————————————————— */
+.kolumny { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2em; }
+.kolumny > * { min-width: 0; }
+
+/* ——— slajd tytułowy ——————————————————————————————————————— */
+section.tytul {
+  justify-content: center;
+  background: linear-gradient(135deg, #1b2430 0%, #24344b 100%);
+  color: #fff;
+}
+section.tytul h1 { color: #fff; font-size: 2.1em; }
+section.tytul h1::after { background: var(--akcent-lab); }
+section.tytul h2 { color: #aebfd4; font-weight: 400; font-size: 1.05em; }
+section.tytul code { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.2); color: #fff; }
+
+/* ——— przerywnik sekcji ———————————————————————————————————— */
+section.sekcja { justify-content: center; background: var(--kod-tlo); }
+section.sekcja h1 { font-size: 1.9em; }
+
+/* ——— slajd „teraz lab" ———————————————————————————————————— */
+section.lab { justify-content: center; border-left: 16px solid var(--akcent-lab); }
+section.lab h1 { color: var(--akcent-lab); }
+section.lab h1::after { background: var(--akcent-lab); }
+
+/* ——— wariant ciemny ———————————————————————————————————————— */
+section.ciemny { background: #1b2430; color: #e8edf4; }
+section.ciemny h1, section.ciemny h2 { color: #fff; }
+section.ciemny pre, section.ciemny code { background: #243044; border-color: #35445c; color: #e8edf4; }
+
+/* ——— stopka i numeracja ——————————————————————————————————— */
+section::after {
+  color: var(--szary);
+  font-size: .62em;
+  right: 40px; bottom: 28px;
+}
+footer { color: var(--szary); font-size: .62em; left: 72px; bottom: 28px; }
+section.tytul::after, section.tytul footer { color: #8fa3bd; }

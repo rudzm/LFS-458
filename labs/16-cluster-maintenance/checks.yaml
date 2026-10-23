@@ -1,0 +1,349 @@
+module: "16"
+title: "Cluster Maintenance — upgrade klastra kubeadm"
+day: 4
+environment: vagrant-kubeadm
+
+# Celowo bez `chapter`: „Cluster Maintenance" to rozdział dodatkowy, spoza
+# sylabusa LFS458 (którego rozdziały 1–15 mają mapowanie jeden-do-jednego
+# z labami). Slajdy: slides/16-cluster-maintenance.md.
+#
+# Lab stoi na maszynach z laba 02. Jeśli ich już nie ma, `labctl` postawi
+# nowe — to kilkanaście minut, ale nic poza tym się nie zmienia.
+
+intro: |
+  Maszyny z laba 02 stoją na **1.36**. Podniesiesz je do **1.37** — tak jak
+  robi się to na produkcji i jak pyta o to egzamin CKA.
+
+  ```bash
+  cd env/vm/kubeadm
+  vagrant ssh cp        # control plane, 192.168.56.10
+  vagrant ssh worker    # worker node,   192.168.56.11
+  ```
+
+  > **Ten lab wymaga działającego klastra z laba 02.** Jeśli maszyny nie stoją
+  > albo kontekst `kubeadm-lfs458` nie istnieje, wróć najpierw do modułu 02.
+
+  Reguła, która porządkuje całą kolejność: **nic nie może być nowsze od
+  serwera API**. Dlatego najpierw apiserver, potem kubelet — nigdy odwrotnie.
+
+tasks:
+  - id: task-1
+    points: 3
+    description: |
+      **Przygotuj się i przeczytaj plan.**
+
+      Na maszynie `cp`:
+
+      1. Sprawdź, od czego startujesz — wersję klastra i wersję kubeleta
+         na obu node'ach.
+      2. Przepnij repozytorium APT na **v1.37** i odśwież listę pakietów.
+      3. Zdejmij `hold` z **samego `kubeadm`** i zainstaluj go w wersji 1.37.
+      4. Uruchom `kubeadm upgrade plan` i przeczytaj, co ci mówi.
+
+      > Repozytorium `pkgs.k8s.io` jest przypięte do wersji minor. Dopóki go
+      > nie przepniesz, pakiet `kubeadm` w wersji 1.37 **nie istnieje** —
+      > `apt-get install` powie „Version not found" i to nie jest awaria.
+
+      Nie podnoś jeszcze kubeleta ani kubectl. Teraz tylko `kubeadm`.
+    hints:
+      - "Punkt wyjścia odczytasz bez logowania się na maszyny:\n\n```bash\nkubectl --context kubeadm-lfs458 get nodes -o wide\nkubectl --context kubeadm-lfs458 version --short\n```"
+      - "Plik repozytorium to `/etc/apt/sources.list.d/kubernetes.list` — w środku jest `v1.36`. Po podmianie na `v1.37` wywołaj `sudo apt-get update`."
+      - "Dostępne wersje pakietu pokaże `apt-cache madison kubeadm`. Stamtąd weź pełny numer, np. `1.37.0-1.1`."
+      - "Całość na maszynie `cp`:\n\n```bash\nsudo sed -i 's|v1.36|v1.37|' /etc/apt/sources.list.d/kubernetes.list\nsudo apt-get update\nsudo apt-mark unhold kubeadm\nsudo apt-get install -y kubeadm=1.37.0-1.1\nsudo apt-mark hold kubeadm\nkubeadm upgrade plan\n```"
+    solution: |
+      ```bash
+      vagrant ssh cp
+      sudo sed -i 's|v1.36|v1.37|' /etc/apt/sources.list.d/kubernetes.list
+      sudo apt-get update
+      apt-cache madison kubeadm | head -3          # jaki pełny numer wziąć
+
+      sudo apt-mark unhold kubeadm
+      sudo apt-get install -y kubeadm=1.37.0-1.1
+      sudo apt-mark hold kubeadm
+
+      kubeadm version -o short                     # v1.37.0
+      kubeadm upgrade plan
+      ```
+
+      `upgrade plan` pokazuje tabelę „COMPONENT / CURRENT / TARGET" i jawnie
+      przypomina, że **kubelet trzeba podnieść ręcznie** — `kubeadm` go nie
+      dotyka. Czyta też ConfigMapę `kubeadm-config` z klastra, więc
+      wykonujesz go na node'ie control plane, nie na workerze.
+    checks:
+      - name: "kubeadm na node'ie cp jest w wersji 1.37"
+        exec:
+          timeout: 3m
+          script: |
+            cd env/vm/kubeadm
+            vagrant ssh cp -c "kubeadm version -o short" 2>/dev/null | tr -d '\r'
+          stdoutMatches: "v1[.]37[.]"
+      - name: "repozytorium APT wskazuje na v1.37"
+        exec:
+          timeout: 3m
+          script: |
+            cd env/vm/kubeadm
+            vagrant ssh cp -c "cat /etc/apt/sources.list.d/kubernetes.list" 2>/dev/null \
+              | tr -d '\r'
+          stdoutMatches: "stable:/v1[.]37/deb"
+
+  - id: task-2
+    points: 4
+    description: |
+      **Podnieś control plane.**
+
+      Na maszynie `cp` wykonaj upgrade do **v1.37.0**. Jedno polecenie podmieni
+      manifesty static Podów apiservera, schedulera, controller-managera i etcd,
+      odnowi certyfikaty i zaktualizuje ConfigMapy w klastrze.
+
+      Po kilku minutach sprawdź z hosta, co się zmieniło:
+
+      ```bash
+      kubectl --context kubeadm-lfs458 get nodes -o wide
+      kubectl --context kubeadm-lfs458 version --short
+      ```
+
+      **Zwróć uwagę na rozjazd**, który właśnie zrobiłeś: serwer API ma już
+      1.37, a kubelet na obu node'ach nadal 1.36. Klaster działa, bo kubelet
+      **może** być starszy od apiservera — do trzech minorów. Gdyby było
+      odwrotnie, node zostałby odrzucony.
+    hints:
+      - "Polecenie to `kubeadm upgrade apply`, a nie `upgrade node` — `apply` jest dla pierwszego control plane node'a."
+      - "Wersję podajesz z literą `v`: `sudo kubeadm upgrade apply v1.37.0`. Narzędzie zapyta o potwierdzenie; `-y` je pomija."
+      - "Zmianę zobaczysz w obrazach static Podów:\n\n```bash\nkubectl --context kubeadm-lfs458 -n kube-system get pod \\\n  -l component=kube-apiserver -o jsonpath='{.items[*].spec.containers[*].image}'\n```"
+    solution: |
+      ```bash
+      vagrant ssh cp
+      sudo kubeadm upgrade apply v1.37.0 -y
+      ```
+
+      Co robi `apply`, po kolei: sprawdza stan klastra i wersje, podmienia
+      manifesty w `/etc/kubernetes/manifests/` (kubelet sam podnosi nowe
+      kontenery), robi backup starych manifestów i certyfikatów w
+      `/etc/kubernetes/tmp/`, aktualizuje ConfigMapę `kubeadm-config` oraz
+      RBAC, i podnosi też **etcd**.
+
+      Czego **nie** robi: nie dotyka kubeleta ani kubectl. To zadanie 3.
+
+      ```bash
+      kubectl --context kubeadm-lfs458 version --short
+      # Server Version: v1.37.0     ← już nowy
+      kubectl --context kubeadm-lfs458 get nodes
+      # oba node'y nadal v1.36.x     ← legalny version skew
+      ```
+    checks:
+      - name: "serwer API działa w wersji 1.37"
+        exec:
+          timeout: 2m
+          script: |
+            kubectl --context "${KUBECONTEXT:-kubeadm-lfs458}" version -o json 2>/dev/null \
+              | python3 -c "import json,sys; d=json.load(sys.stdin)['serverVersion']; print(d['major']+'.'+d['minor'])" \
+              2>/dev/null || echo "BRAK ODPOWIEDZI"
+          stdoutMatches: "^1[.]37$"
+      # etcd ma własną numerację (3.7.0-0), więc wykluczamy go z selektora —
+      # inaczej asercja „wszystkie obrazy 1.37" nigdy by nie przeszła.
+      - name: "static Pody control plane mają obrazy 1.37"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: kube-system
+          labelSelector: "tier=control-plane,component!=etcd"
+        assert:
+          - path: "{.items[*].spec.containers[*].image}"
+            op: matches
+            value: "v1[.]37[.]"
+            quantifier: all
+            message: "któryś komponent control plane nadal działa na starym obrazie — sprawdź `kubeadm upgrade plan`"
+      - name: "klaster jest zdrowy po upgrade"
+        resource:
+          apiVersion: v1
+          kind: Node
+        assert:
+          - path: "{.items[*].status.conditions[?(@.type=='Ready')].status}"
+            op: eq
+            value: "True"
+            quantifier: all
+            message: "któryś node nie jest Ready — zajrzyj w `journalctl -u kubelet` na tym node'ie"
+
+  - id: task-3
+    points: 3
+    description: |
+      **Podnieś kubeleta na node'ie control plane — z `drain` i `uncordon`.**
+
+      Kolejność nie jest ozdobna:
+
+      1. `drain` node'a — zdejmij z niego workloady i zablokuj planowanie
+      2. podnieś pakiety `kubelet` i `kubectl` do 1.37
+      3. `daemon-reload` + `restart kubelet`
+      4. `uncordon` — wpuść Pody z powrotem
+
+      Sprawdzenie pilnuje **obu** rzeczy: wersji kubeleta **i** tego, że node
+      nie został zapomniany w stanie `SchedulingDisabled`. To najczęstszy błąd
+      w tym ćwiczeniu — i na egzaminie.
+
+      > `drain` na control plane w klastrze z jednym node'em wymaga
+      > `--ignore-daemonsets`. DaemonSetów nie da się ewakuować: ich Pody
+      > mają żyć na każdym node'ie.
+    hints:
+      - "`kubectl drain k8s-cp --ignore-daemonsets` — jeśli odmówi z powodu Podów bez kontrolera, dołóż `--force`."
+      - "Pakiety są na `hold`, więc najpierw `sudo apt-mark unhold kubelet kubectl`, a po instalacji z powrotem `hold`."
+      - "Po instalacji kubelet nie podniesie się sam z nową konfiguracją:\n\n```bash\nsudo systemctl daemon-reload\nsudo systemctl restart kubelet\n```"
+      - "Na koniec `kubectl uncordon k8s-cp`. Bez tego node zostaje `Ready,SchedulingDisabled`."
+    solution: |
+      ```bash
+      # z hosta albo z maszyny cp
+      kubectl --context kubeadm-lfs458 drain k8s-cp --ignore-daemonsets
+
+      vagrant ssh cp
+      sudo apt-mark unhold kubelet kubectl
+      sudo apt-get install -y kubelet=1.37.0-1.1 kubectl=1.37.0-1.1
+      sudo apt-mark hold kubelet kubectl
+      sudo systemctl daemon-reload
+      sudo systemctl restart kubelet
+      exit
+
+      kubectl --context kubeadm-lfs458 uncordon k8s-cp
+      kubectl --context kubeadm-lfs458 get nodes
+      ```
+
+      Po co `apt-mark hold`: bez niego zwykły `apt upgrade` podniesie kubeleta
+      ponad wersję apiservera przy najbliższej okazji i **złamie version skew**.
+      Node zostanie odrzucony przez control plane — awaria trudna do
+      powiązania z przyczyną, bo nikt niczego świadomie nie aktualizował.
+    checks:
+      - name: "kubelet na k8s-cp jest w wersji 1.37"
+        resource:
+          apiVersion: v1
+          kind: Node
+          name: k8s-cp
+        assert:
+          - path: "{.status.nodeInfo.kubeletVersion}"
+            op: matches
+            value: "^v1[.]37[.]"
+            message: "kubelet na k8s-cp nadal raportuje starą wersję — po instalacji pakietu potrzebny jest `systemctl restart kubelet`"
+      - name: "node k8s-cp znów przyjmuje Pody"
+        exec:
+          timeout: 2m
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kubeadm-lfs458}"
+            if [ "$($K get node k8s-cp -o jsonpath='{.spec.unschedulable}' 2>/dev/null)" = "true" ]; then
+              echo "WYNIK: node zablokowany"
+            else
+              echo "WYNIK: node odblokowany"
+            fi
+          stdoutMatches: "WYNIK: node odblokowany"
+
+  - id: task-4
+    points: 2
+    description: |
+      **Podnieś worker node.**
+
+      Na maszynie `worker` przebieg jest prawie ten sam, z jedną różnicą:
+      zamiast `kubeadm upgrade apply` idzie **`kubeadm upgrade node`**.
+      To polecenie nie dotyka control plane — odświeża tylko lokalną
+      konfigurację kubeleta.
+
+      Reszta bez zmian: repozytorium APT, `kubeadm`, `drain`, pakiety,
+      restart, `uncordon`.
+
+      > `drain` i `uncordon` wykonujesz **z hosta albo z `cp`** — na workerze
+      > nie ma kubeconfiga administratora i nie powinno go być.
+    hints:
+      - "Repozytorium na workerze też jest przypięte do `v1.36` — zacznij od tego samego `sed`, co w zadaniu 1."
+      - "Na workerze: `sudo kubeadm upgrade node`, nie `upgrade apply`."
+      - "Kolejność: `drain` (z hosta) → `kubeadm upgrade node` → pakiety kubelet/kubectl → `daemon-reload` + `restart` → `uncordon` (z hosta)."
+    solution: |
+      ```bash
+      kubectl --context kubeadm-lfs458 drain k8s-worker --ignore-daemonsets
+
+      vagrant ssh worker
+      sudo sed -i 's|v1.36|v1.37|' /etc/apt/sources.list.d/kubernetes.list
+      sudo apt-get update
+      sudo apt-mark unhold kubeadm && sudo apt-get install -y kubeadm=1.37.0-1.1
+      sudo apt-mark hold kubeadm
+
+      sudo kubeadm upgrade node
+
+      sudo apt-mark unhold kubelet kubectl
+      sudo apt-get install -y kubelet=1.37.0-1.1 kubectl=1.37.0-1.1
+      sudo apt-mark hold kubelet kubectl
+      sudo systemctl daemon-reload && sudo systemctl restart kubelet
+      exit
+
+      kubectl --context kubeadm-lfs458 uncordon k8s-worker
+      kubectl --context kubeadm-lfs458 get nodes -o wide
+      ```
+
+      Przy wielu workerach powtarzasz to node po node'ie — nigdy równolegle.
+      Jeden node na raz to jedyny sposób, żeby workloady miały gdzie się
+      przenieść.
+    checks:
+      - name: "oba node'y mają kubelet 1.37"
+        resource:
+          apiVersion: v1
+          kind: Node
+        assert:
+          - path: "{.items[*].status.nodeInfo.kubeletVersion}"
+            op: matches
+            value: "^v1[.]37[.]"
+            quantifier: all
+            message: "któryś node nadal raportuje starą wersję kubeleta"
+      - name: "żaden node nie został zablokowany"
+        exec:
+          timeout: 2m
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kubeadm-lfs458}"
+            ILE=$($K get nodes -o jsonpath='{.items[?(@.spec.unschedulable==true)].metadata.name}' \
+                    2>/dev/null | wc -w)
+            echo "WYNIK: zablokowanych=$ILE"
+          stdoutMatches: "WYNIK: zablokowanych=0"
+      - name: "klaster jest zdrowy"
+        resource:
+          apiVersion: v1
+          kind: Node
+        assert:
+          - path: "{.items[*].status.conditions[?(@.type=='Ready')].status}"
+            op: eq
+            value: "True"
+            quantifier: all
+
+  - id: task-5
+    points: 2
+    optional: true
+    description: |
+      **(dodatkowe) Zostaw maszyny gotowe dla następnego administratora.**
+
+      Po upgrade wszystkie trzy pakiety — `kubeadm`, `kubelet`, `kubectl` —
+      mają być z powrotem na `hold`, i to na **obu** maszynach. Sprawdź to
+      i dociśnij, jeśli czegoś brakuje.
+
+      ```bash
+      vagrant ssh cp     -c "apt-mark showhold"
+      vagrant ssh worker -c "apt-mark showhold"
+      ```
+
+      To nie jest czystość dla czystości: `hold` jest jedynym mechanizmem,
+      który broni klaster przed przypadkowym `apt upgrade` łamiącym
+      version skew.
+    hints:
+      - "`sudo apt-mark hold kubelet kubeadm kubectl` na każdej maszynie."
+    solution: |
+      ```bash
+      for M in cp worker; do
+        vagrant ssh $M -c "sudo apt-mark hold kubelet kubeadm kubectl"
+      done
+      ```
+    checks:
+      - name: "wszystkie trzy pakiety są na hold na obu maszynach"
+        exec:
+          timeout: 4m
+          script: |
+            cd env/vm/kubeadm
+            BRAKI=""
+            for M in cp worker; do
+              H=$(vagrant ssh $M -c "apt-mark showhold" 2>/dev/null | tr -d '\r')
+              for P in kubelet kubeadm kubectl; do
+                echo "$H" | grep -qx "$P" || BRAKI="$BRAKI $M/$P"
+              done
+            done
+            [ -z "$BRAKI" ] && echo "WYNIK: wszystko na hold" || echo "WYNIK: brakuje$BRAKI"
+          stdoutMatches: "WYNIK: wszystko na hold"

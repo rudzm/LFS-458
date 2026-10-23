@@ -1,0 +1,45 @@
+# Klaster szkoleniowy LFS458 — używa go 14 z 18 modułów.
+#
+# Wymagania, które ten plik musi spełnić (wyprowadzone z treści labów):
+#   • 3 węzły: lfs458-control-plane, lfs458-worker, lfs458-worker2  (moduł 01: liczba-wezlow=3)
+#   • kontekst kind-lfs458, pula Podów 10.244.0.0/16, DNS 10.96.0.10 (moduł 03)
+#   • port 8080/8443 na hoście → Ingress                            (moduły 10, 99)
+#   • Gateway API i LoadBalancer idą przez cloud-provider-kind, nie przez port
+#   • NodePortów NIE mapujemy na hosta: node'y Kind to kontenery na mostku
+#     dockera, więc z linuksowego hosta sięgasz po nie wprost pod adresem
+#     node'a. Mapowanie wystawiłoby tylko JEDEN node i uniemożliwiło pokazanie,
+#     że NodePort otwiera port na wszystkich                        (moduł 09)
+#   • domyślny CNI (kindnet) — od kind 0.26 wymusza NetworkPolicy    (moduły 14, 99)
+#
+# Obraz węzła jest przypięty z sumą kontrolną celowo: osiem stanowisk ma
+# dostać dokładnie ten sam klaster, niezależnie od wersji binarki kind.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: lfs458
+
+networking:
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/16"
+  # kube-proxy w trybie iptables jawnie, a nie domyślnie: moduł 03 każe
+  # kursantowi odczytać tryb z ConfigMapy kube-proxy, a przy wartości
+  # domyślnej pole `mode` jest tam puste i nie ma czego odczytać.
+  kubeProxyMode: "iptables"
+
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - { containerPort: 80,    hostPort: 8080,  protocol: TCP }   # Ingress HTTP
+      - { containerPort: 443,   hostPort: 8443,  protocol: TCP }   # Ingress HTTPS
+
+  - role: worker
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+
+  - role: worker
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5

@@ -1,0 +1,401 @@
+module: "15"
+title: "High Availability — kworum i kopia zapasowa"
+chapter: 15
+chapterTitle: "High Availability"
+day: 4
+environment: kind-ha
+
+intro: |
+  Jedyny moduł, który pracuje na klastrze **`kind-ha`**: trzy node'y control
+  plane ze stacked etcd, za load balancerem HAProxy, którego Kind stawia sam.
+  Worker node'ów nie ma — do kworum i kopii zapasowej nie są potrzebne.
+
+  ```bash
+  kubectl config use-context kind-lfs458-ha
+  kubectl get nodes
+  ```
+
+  > **Jeśli masz 8 GiB RAM**, usuń najpierw klaster podstawowy
+  > (`labctl env down kind-basic`). Dwa klastry Kind naraz potrafią wyczerpać
+  > limity systemowe — najczęściej `inotify`, a objawia się to komunikatem
+  > `too many open files` przy tworzeniu drugiego klastra.
+
+cleanup:
+  - name: "Usuwam arkusz odpowiedzi"
+    timeout: 30s
+    ignoreError: true
+    script: |
+      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-15.txt"
+      echo "arkusz usunięty"
+  - name: "Usuwam namespace lfs458-m15"
+    timeout: 3m
+    ignoreError: true
+    script: |
+      kubectl --context kind-lfs458-ha delete namespace lfs458-m15 --ignore-not-found --wait=true
+  - name: "Przywracam taint na node'ie control plane"
+    timeout: 2m
+    ignoreError: true
+    script: |
+      kubectl --context kind-lfs458-ha taint node lfs458-ha-control-plane \
+        node-role.kubernetes.io/control-plane=:NoSchedule --overwrite 2>/dev/null || true
+      echo "taint przywrócony"
+  # Migawki nie usuwamy: obraz etcd jest distroless i nie ma w nim ani powłoki,
+  # ani `rm`. Plik leży w ulotnym /tmp kontenera etcd i znika przy jego restarcie
+  # albo razem z klastrem (`labctl env down kind-ha`).
+  - name: "Pokazuję, gdzie została migawka"
+    timeout: 3m
+    ignoreError: true
+    script: |
+      K="kubectl --context kind-lfs458-ha"
+      POD=$($K -n kube-system get pod -l component=etcd -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+      if [ -n "$POD" ]; then
+        echo "migawka została w $POD:/tmp/etcd-backup.db"
+        echo "to katalog ulotny — zniknie przy restarcie kontenera etcd"
+        echo "albo razem z klastrem: labctl env down kind-ha"
+      else
+        echo "nie ma Poda etcd — nie ma też czego sprzątać"
+      fi
+
+tasks:
+  - id: task-1
+    points: 4
+    description: |
+      **Zbadaj topologię i policz kworum.**
+
+      Zapisz wyniki w arkuszu **`~/odpowiedzi/lab-15.txt`**
+      z kluczami:
+
+      | Klucz | Co ma zawierać |
+      |---|---|
+      | `nodow-cp` | ile node'ów pełni rolę control plane |
+      | `nodow-razem` | ile node'ów ma cały klaster |
+      | `kworum` | ile instancji etcd musi odpowiadać, żeby dało się zapisywać |
+      | `przezyje-awarii` | ile control plane node'ów może paść bez utraty kworum |
+
+      ```bash
+      kubectl get nodes
+      kubectl get nodes -l node-role.kubernetes.io/control-plane
+      ```
+    hints:
+      - "Control plane node'y mają etykietę `node-role.kubernetes.io/control-plane` — możesz po niej filtrować."
+      - "Kworum liczy się ze wzoru `n/2 + 1`, zaokrąglając w dół dzielenie. Dla trzech instancji to dwie."
+      - "Skoro do działania potrzeba dwóch z trzech, to paść może jedna."
+      - "Liczbę wszystkich node'ów policz sam: `kubectl get nodes --no-headers | wc -l`. Pozostałe wartości dla tego klastra: 3 control plane node'y, kworum 2, przeżyje 1 awarię."
+    solution: |
+      ```bash
+      kubectl config use-context kind-lfs458-ha
+      kubectl create namespace lfs458-m15
+      kubectl get nodes
+
+      cat >> ~/odpowiedzi/lab-15.txt <<'EOF'
+      nodow-cp=3
+      nodow-razem=3
+      kworum=2
+      przezyje-awarii=1
+      EOF
+      ```
+    checks:
+      - name: "klaster ma trzy control plane node'y"
+        resource:
+          apiVersion: v1
+          kind: Node
+          labelSelector: "node-role.kubernetes.io/control-plane"
+        assert:
+          - path: "{.items[*].metadata.name}"
+            count:
+              op: eq
+              value: 3
+            message: "to zadanie wymaga klastra kind-ha — sprawdź kontekst: kubectl config current-context"
+      - name: "poprawnie policzono control plane node'y"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 nodow-cp)
+            [ "$V" = '3' ] || ZLE="$ZLE nodow-cp"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "liczba wszystkich node'ów zgadza się ze stanem klastra"
+        exec:
+          timeout: 60s
+          script: |
+            K="kubectl --context kind-lfs458-ha"
+            faktyczna=$($K get nodes --no-headers | wc -l | tr -d " ")
+            podana=$($K get cm topologia -n lfs458-m15 -o jsonpath='{.data.nodow-razem}' 2>/dev/null)
+            if [ "$faktyczna" = "$podana" ]; then
+              echo "zgadza-sie=$podana"
+            else
+              echo "podano=$podana a klaster ma=$faktyczna"
+            fi
+          stdoutMatches: "zgadza-sie="
+      - name: "poprawnie policzono kworum i odporność"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 kworum)
+            [ "$V" = '2' ] || ZLE="$ZLE kworum"
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 przezyje-awarii)
+            [ "$V" = '1' ] || ZLE="$ZLE przezyje-awarii"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+
+  - id: task-2
+    points: 4
+    description: |
+      **Zapytaj etcd, co o sobie wie.**
+
+      Na klastrze `kubeadm` (a Kind takim jest) `etcdctl` znajduje się
+      **w obrazie etcd**, nie na node'ie. Wejdź więc do Poda etcd i wypisz
+      listę członków klastra.
+
+      ```bash
+      POD=$(kubectl -n kube-system get pod -l component=etcd \
+        -o jsonpath='{.items[0].metadata.name}')
+
+      kubectl -n kube-system exec "$POD" -- etcdctl \
+        --endpoints=https://127.0.0.1:2379 \
+        --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+        --cert=/etc/kubernetes/pki/etcd/server.crt \
+        --key=/etc/kubernetes/pki/etcd/server.key \
+        member list -w table
+      ```
+
+      Wynik zapisz w arkuszu **`~/odpowiedzi/lab-15.txt`**:
+      `czlonkow` (ile ich jest) oraz `port-klientow` (port, na którym
+      etcd obsługuje klientów).
+    hints:
+      - "Pody etcd mają etykietę `component=etcd` w namespace `kube-system`. Jest ich tyle, ile control plane node'ów."
+      - "Bez certyfikatów etcd odmówi rozmowy — wszystkie trzy ścieżki (`--cacert`, `--cert`, `--key`) są obowiązkowe."
+      - "Port klientów widać w adresie `--endpoints`. Drugi port etcd, 2380, służy do rozmów między instancjami."
+    solution: |
+      ```bash
+      POD=$(kubectl -n kube-system get pod -l component=etcd \
+        -o jsonpath='{.items[0].metadata.name}')
+
+      kubectl -n kube-system exec "$POD" -- etcdctl \
+        --endpoints=https://127.0.0.1:2379 \
+        --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+        --cert=/etc/kubernetes/pki/etcd/server.crt \
+        --key=/etc/kubernetes/pki/etcd/server.key \
+        member list -w table
+
+      cat >> ~/odpowiedzi/lab-15.txt <<'EOF'
+      czlonkow=3
+      port-klientow=2379
+      EOF
+      ```
+    checks:
+      - name: "działają trzy instancje etcd"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: kube-system
+          labelSelector: "component=etcd"
+        assert:
+          - path: "{.items[*].status.phase}"
+            op: eq
+            value: Running
+            quantifier: all
+            count:
+              op: eq
+              value: 3
+      - name: "zapisano liczbę członków i port klientów"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 czlonkow)
+            [ "$V" = '3' ] || ZLE="$ZLE czlonkow"
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 port-klientow)
+            [ "$V" = '2379' ] || ZLE="$ZLE port-klientow"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "etcd faktycznie raportuje trzech członków"
+        exec:
+          timeout: 90s
+          script: |
+            K="kubectl --context kind-lfs458-ha"
+            POD=$($K -n kube-system get pod -l component=etcd -o jsonpath='{.items[0].metadata.name}')
+            n=$($K -n kube-system exec "$POD" -- etcdctl \
+              --endpoints=https://127.0.0.1:2379 \
+              --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+              --cert=/etc/kubernetes/pki/etcd/server.crt \
+              --key=/etc/kubernetes/pki/etcd/server.key \
+              member list 2>/dev/null | grep -c started)
+            echo "czlonkow=$n"
+          stdoutMatches: "czlonkow=3"
+
+  - id: task-3
+    points: 5
+    description: |
+      **Wykonaj kopię zapasową etcd.**
+
+      Zrób migawkę bazy do pliku **`/tmp/etcd-backup.db`** wewnątrz Poda etcd,
+      a potem **sprawdź, że jest poprawna**.
+
+      ```bash
+      POD=$(kubectl -n kube-system get pod -l component=etcd \
+        -o jsonpath='{.items[0].metadata.name}')
+
+      kubectl -n kube-system exec "$POD" -- etcdctl \
+        --endpoints=https://127.0.0.1:2379 \
+        --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+        --cert=/etc/kubernetes/pki/etcd/server.crt \
+        --key=/etc/kubernetes/pki/etcd/server.key \
+        snapshot save /tmp/etcd-backup.db
+      ```
+
+      Zapisz w arkuszu **`~/odpowiedzi/lab-15.txt`**:
+
+      | Klucz | Co ma zawierać |
+      |---|---|
+      | `sciezka` | ścieżka do pliku kopii |
+      | `czego-nie-obejmuje` | jedno hasło: czego kopia etcd **nie** zawiera |
+
+      > Odpowiedź na drugie pytanie jest najważniejszą rzeczą z tego modułu.
+    hints:
+      - "Polecenie `snapshot save` przyjmuje te same flagi z certyfikatami co `member list`."
+      - "Poprawność kopii sprawdza `etcdutl snapshot status <plik> -w table` — wypisze liczbę kluczy i rozmiar. Zwróć uwagę: obraz etcd jest *distroless*, nie ma w nim powłoki, więc `ls` czy `wc` tam nie zadziałają. Zostają same binarki etcd."
+      - "Kopia etcd zawiera wszystkie obiekty API. Nie zawiera **danych z PersistentVolume** — do tego służy Velero albo migawki macierzy."
+    solution: |
+      ```bash
+      POD=$(kubectl -n kube-system get pod -l component=etcd \
+        -o jsonpath='{.items[0].metadata.name}')
+
+      kubectl -n kube-system exec "$POD" -- etcdctl \
+        --endpoints=https://127.0.0.1:2379 \
+        --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+        --cert=/etc/kubernetes/pki/etcd/server.crt \
+        --key=/etc/kubernetes/pki/etcd/server.key \
+        snapshot save /tmp/etcd-backup.db
+
+      kubectl -n kube-system exec "$POD" -- \
+        etcdutl snapshot status /tmp/etcd-backup.db -w table
+
+      cat >> ~/odpowiedzi/lab-15.txt <<'EOF'
+      sciezka=/tmp/etcd-backup.db
+      czego-nie-obejmuje=PersistentVolume
+      EOF
+      ```
+    checks:
+      # Obraz etcd jest distroless — nie ma w nim powłoki, więc plik sprawdzamy
+      # narzędziem etcdutl, a nie `sh -c 'wc -c'`.
+      - name: "kopia istnieje i przechodzi weryfikację etcdutl"
+        exec:
+          timeout: 120s
+          script: |
+            K="kubectl --context kind-lfs458-ha"
+            POD=$($K -n kube-system get pod -l component=etcd -o jsonpath='{.items[0].metadata.name}')
+            $K -n kube-system exec "$POD" -- \
+              etcdutl snapshot status /tmp/etcd-backup.db -w json 2>&1 | tail -1
+          stdoutMatches: '"totalKey":[1-9][0-9]*'
+      - name: "kopia zawiera pełny stan klastra (setki kluczy)"
+        exec:
+          timeout: 120s
+          script: |
+            K="kubectl --context kind-lfs458-ha"
+            POD=$($K -n kube-system get pod -l component=etcd -o jsonpath='{.items[0].metadata.name}')
+            klucze=$($K -n kube-system exec "$POD" -- \
+              etcdutl snapshot status /tmp/etcd-backup.db -w json 2>/dev/null \
+              | sed -n 's/.*"totalKey":\([0-9]*\).*/\1/p')
+            if [ -n "$klucze" ] && [ "$klucze" -gt 100 ]; then
+              echo "kluczy=$klucze"
+            else
+              echo "kopia wygląda na niepełną: kluczy=$klucze"
+            fi
+          stdoutMatches: "^kluczy=[0-9]+$"
+      - name: "opisano kopię i jej ograniczenie"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 sciezka)
+            [ "$V" = '/tmp/etcd-backup.db' ] || ZLE="$ZLE sciezka"
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 15 czego-nie-obejmuje)
+            printf '%s' "$V" | grep -qE '(?i)persistentvolume|pvc|wolumen|dane' || ZLE="$ZLE czego-nie-obejmuje"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+
+  - id: task-4
+    points: 3
+    optional: true
+    description: |
+      **Zabezpiecz aplikację przed nadmierną eksmisją.**
+
+      Zadanie dodatkowe. Podczas prac serwisowych administrator opróżnia node'y
+      poleceniem `kubectl drain`. Bez zabezpieczenia może przy okazji ubić
+      wszystkie repliki aplikacji naraz.
+
+      1. Klaster nie ma worker node'ów, a control plane odpycha zwykłe Pody.
+         **Zdejmij taint** z jednego z control plane node'ów — tak jak
+         w module 02.
+      2. Uruchom w `lfs458-m15` Deployment **`wazna-usluga`** — 3 repliki
+         `nginx:1.27-alpine` (Pody dostaną etykietę `app=wazna-usluga`)
+      3. Utwórz **PodDisruptionBudget** o nazwie `wazna-pdb`, który gwarantuje,
+         że zawsze będą działać **co najmniej 2** repliki
+
+      ```bash
+      kubectl get pdb -n lfs458-m15
+      ```
+    hints:
+      - "Taint zdejmuje się poleceniem z minusem na końcu: `kubectl taint node lfs458-ha-control-plane node-role.kubernetes.io/control-plane:NoSchedule-`."
+      - "PDB jest w grupie `policy/v1`. Ma pole `minAvailable` albo `maxUnavailable` — nie oba naraz."
+      - "`selector` PDB wskazuje Pody, których dotyczy — tak samo jak w Service."
+      - "Selektor PDB musi pasować do etykiet **Podów**, a nie Deploymentu. `kubectl create deployment` nadaje Podom etykietę `app=<nazwa>`.\n\n```yaml\napiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata:\n  name: wazna-pdb\n  namespace: lfs458-m15\nspec:\n  minAvailable: 2\n  selector:\n    matchLabels:\n      app: wazna-usluga\n```"
+    solution: |
+      ```bash
+      kubectl taint node lfs458-ha-control-plane \
+        node-role.kubernetes.io/control-plane:NoSchedule-
+
+      kubectl create deployment wazna-usluga --image=nginx:1.27-alpine \
+        --replicas=3 -n lfs458-m15
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: wazna-pdb
+        namespace: lfs458-m15
+      spec:
+        minAvailable: 2
+        selector:
+          matchLabels:
+            app: wazna-usluga
+      EOF
+
+      kubectl get pdb -n lfs458-m15
+      ```
+    checks:
+      - name: "Deployment wazna-usluga ma trzy gotowe repliki"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m15
+          name: wazna-usluga
+        assert:
+          - path: "{.status.readyReplicas}"
+            op: eq
+            value: 3
+      - name: "PodDisruptionBudget gwarantuje minimum dwie repliki"
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          namespace: lfs458-m15
+          name: wazna-pdb
+        assert:
+          - path: "{.spec.minAvailable}"
+            op: eq
+            value: 2
+            message: "ustaw `minAvailable: 2` — przy trzech replikach pozwala to opróżnić jeden node naraz"
+      - name: "PDB faktycznie pilnuje Podów aplikacji"
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          namespace: lfs458-m15
+          name: wazna-pdb
+        assert:
+          - path: "{.status.currentHealthy}"
+            op: gte
+            value: 2
+            message: "PDB nie widzi żadnych Podów — sprawdź, czy jego selektor pasuje do etykiet Deploymentu"

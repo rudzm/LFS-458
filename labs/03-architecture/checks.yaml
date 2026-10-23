@@ -1,0 +1,466 @@
+module: "03"
+title: "Kubernetes Architecture — komponenty pod maską"
+chapter: 3
+chapterTitle: "Kubernetes Architecture"
+day: 1
+environment: kind-basic
+
+intro: |
+  Zejdziesz poziom niżej niż w module 01: obejrzysz sieć klastra od środka,
+  udowodnisz, na czym polega wspólna przestrzeń nazw w Podzie, i utworzysz
+  Poda **z pominięciem serwera API**.
+
+  W kilku zadaniach wejdziesz do node'a. Node klastra Kind to zwykły kontener:
+
+  ```bash
+  docker exec -it lfs458-worker bash     # albo: nerdctl exec -it lfs458-worker bash
+  ```
+
+cleanup:
+  - name: "Usuwam arkusz odpowiedzi"
+    timeout: 30s
+    ignoreError: true
+    script: |
+      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-03.txt"
+      echo "arkusz usunięty"
+  - name: "Usuwam namespace lfs458-m03"
+    timeout: 3m
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m03 --ignore-not-found --wait=true
+  - name: "Usuwam manifesty static Podów z node'ów"
+    timeout: 3m
+    ignoreError: true
+    script: |
+      CRI="${CONTAINER_CLI:-docker}"
+      for node in lfs458-worker lfs458-worker2; do
+        "$CRI" exec "$node" rm -f /etc/kubernetes/manifests/statyczny.yaml 2>/dev/null || true
+      done
+      echo "manifesty static Podów usunięte"
+
+tasks:
+  - id: task-1
+    points: 3
+    description: |
+      **Zinwentaryzuj sieć klastra.**
+
+      Zapisz wyniki w arkuszu **`~/odpowiedzi/lab-03.txt`** — pliku
+      `klucz=wartość`, po jednej parze na linię:
+
+      | Klucz | Co ma zawierać |
+      |---|---|
+      | `cni` | nazwa DaemonSetu z CNI pluginem |
+      | `podcidr-klastra` | pula adresów Podów całego klastra |
+      | `podcidr-worker` | wycinek tej puli przydzielony node'owi `lfs458-worker` |
+      | `dns-ip` | adres ClusterIP usługi DNS |
+      | `kube-proxy-tryb` | tryb pracy kube-proxy |
+
+      > Zwróć uwagę na relację między dwoma pierwszymi pulami — każdy node
+      > dostaje własny wycinek i to controller-manager mu go przydziela.
+    hints:
+      - "DaemonSety w namespace `kube-system`: `kubectl get ds -n kube-system`. Jeden z nich to kube-proxy, drugi to CNI plugin."
+      - "PodCIDR node'ów: `kubectl get nodes -o custom-columns=WEZEL:.metadata.name,CIDR:.spec.podCIDR`. Pulę całego klastra znajdziesz w ConfigMapie `kubeadm-config` w `kube-system`."
+      - "Adres DNS: `kubectl get svc -n kube-system kube-dns`. Tryb kube-proxy jest w jego ConfigMapie: `kubectl -n kube-system get cm kube-proxy -o yaml | grep mode`."
+      - "Wartości dla naszego klastra: CNI plugin `kindnet`, pula klastra `10.244.0.0/16`, DNS `10.96.0.10`, tryb `iptables`. Wycinka workera **nie przepisuj z podpowiedzi** — controller-manager przydziela go w kolejności rejestracji node'ów, więc u każdego może wyjść inny numer. Odczytaj swój: `kubectl get node lfs458-worker -o jsonpath='{.spec.podCIDR}'`."
+    solution: |
+      ```bash
+      kubectl get ds -n kube-system
+      kubectl get nodes -o custom-columns=WEZEL:.metadata.name,CIDR:.spec.podCIDR
+      kubectl -n kube-system get cm kubeadm-config -o yaml | grep -A4 networking
+      kubectl get svc -n kube-system kube-dns
+      kubectl -n kube-system get cm kube-proxy -o yaml | grep 'mode:'
+
+      kubectl create namespace lfs458-m03
+
+      WORKER=$(kubectl get node lfs458-worker -o jsonpath='{.spec.podCIDR}')
+      DNS=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
+
+      cat >> ~/odpowiedzi/lab-03.txt <<EOF
+      cni=kindnet
+      podcidr-klastra=10.244.0.0/16
+      podcidr-worker=$WORKER
+      dns-ip=$DNS
+      kube-proxy-tryb=iptables
+      EOF
+      ```
+    checks:
+      - name: "namespace lfs458-m03 istnieje"
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          name: lfs458-m03
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Active
+      - name: "wskazano CNI plugin klastra"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 cni)
+            [ "$V" = 'kindnet' ] || ZLE="$ZLE cni"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "podano pulę adresów Podów klastra i wycinek node'a"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 podcidr-klastra)
+            [ "$V" = '10.244.0.0/16' ] || ZLE="$ZLE podcidr-klastra"
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 podcidr-worker)
+            printf '%s' "$V" | grep -qE '^10\.244\.[0-9]+\.0/24$' || ZLE="$ZLE podcidr-worker"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "wycinek zgadza się z tym, co naprawdę ma node lfs458-worker"
+        exec:
+          timeout: 40s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            faktyczny=$($K get node lfs458-worker -o jsonpath='{.spec.podCIDR}')
+            podany=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 podcidr-worker)
+            if [ -n "$faktyczny" ] && [ "$faktyczny" = "$podany" ]; then
+              echo "zgadza-sie=$podany"
+            else
+              echo "podano '$podany', a node ma '$faktyczny'"
+            fi
+          stdoutMatches: "zgadza-sie="
+
+      - name: "podano adres usługi DNS"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 dns-ip)
+            [ "$V" = '10.96.0.10' ] || ZLE="$ZLE dns-ip"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "podano tryb pracy kube-proxy"
+        exec:
+          timeout: 30s
+          script: |
+            echo "tryb=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 kube-proxy-tryb)"
+          stdoutMatches: "tryb=(iptables|ipvs|nftables)$"
+          message: "tryb jest w ConfigMapie kube-proxy: `kubectl -n kube-system get cm kube-proxy -o yaml | grep mode`"
+
+  - id: task-2
+    points: 3
+    description: |
+      **Udowodnij, że kontenery w jednym Podzie dzielą sieć.**
+
+      Utwórz w `lfs458-m03` Poda o nazwie `wspolna-siec` z **dwoma kontenerami**:
+
+      | Kontener | Obraz | Rola |
+      |---|---|---|
+      | `serwer` | `hashicorp/http-echo:1.0` | nasłuchuje na porcie **5678** i odpowiada tekstem `architektura` |
+      | `klient` | `busybox:1.36` | nie robi nic (`sleep 3600`), służy do testów |
+
+      Potem z kontenera `klient` odpytaj serwer **po `localhost`**:
+
+      ```bash
+      kubectl exec -n lfs458-m03 wspolna-siec -c klient -- wget -qO- http://localhost:5678
+      ```
+
+      Gdyby to były dwa osobne Pody, `localhost` nie zadziałałby nigdy.
+    hints:
+      - "Poda z dwoma kontenerami nie zrobisz `kubectl run` — potrzebny jest plik YAML z listą `spec.containers`."
+      - "`http-echo` przyjmuje argumenty: `-text=architektura` oraz `-listen=:5678`. Podaje się je w polu `args`."
+      - "Busybox bez polecenia od razu się kończy. Daj mu `command: [\"sleep\", \"3600\"]`."
+      - "Szkielet:\n\n```yaml\napiVersion: v1\nkind: Pod\nmetadata:\n  name: wspolna-siec\n  namespace: lfs458-m03\nspec:\n  containers:\n    - name: serwer\n      image: hashicorp/http-echo:1.0\n      args: [\"-text=architektura\", \"-listen=:5678\"]\n    - name: klient\n      image: busybox:1.36\n      command: [\"sleep\", \"3600\"]\n```"
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: wspolna-siec
+        namespace: lfs458-m03
+      spec:
+        containers:
+          - name: serwer
+            image: hashicorp/http-echo:1.0
+            args: ["-text=architektura", "-listen=:5678"]
+          - name: klient
+            image: busybox:1.36
+            command: ["sleep", "3600"]
+      EOF
+
+      kubectl exec -n lfs458-m03 wspolna-siec -c klient -- wget -qO- http://localhost:5678
+      ```
+
+      Oba kontenery mają ten sam adres IP Poda i wspólny `localhost`, bo trzyma
+      je razem kontener `pause`.
+    checks:
+      - name: "Pod wspolna-siec ma dwa kontenery i działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m03
+          name: wspolna-siec
+        assert:
+          - path: "{.spec.containers[*].name}"
+            count:
+              op: eq
+              value: 2
+            message: "Pod ma mieć dokładnie dwa kontenery: serwer i klient"
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+            message: "poczekaj, aż Pod wstanie — `kubectl get pod wspolna-siec -n lfs458-m03`"
+      - name: "oba kontenery są gotowe"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m03
+          name: wspolna-siec
+        assert:
+          - path: "{.status.containerStatuses[*].ready}"
+            op: eq
+            value: "true"
+            quantifier: all
+            count:
+              op: eq
+              value: 2
+            message: "któryś kontener nie jest Ready — `kubectl describe pod wspolna-siec -n lfs458-m03`"
+      - name: "kontener klient dosięga serwera po localhost"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" exec -n lfs458-m03 wspolna-siec \
+              -c klient -- wget -qO- --timeout=5 http://localhost:5678
+          stdoutMatches: "architektura"
+
+  - id: task-3
+    points: 4
+    description: |
+      **Utwórz Poda z pominięciem serwera API.**
+
+      Na node'ie **`lfs458-worker`** wpisz manifest Poda do katalogu, z którego
+      kubelet czyta static Pody. Nazwij plik `statyczny.yaml`, a Poda —
+      `statyczny`, z jednym kontenerem `nginx:1.27-alpine`.
+
+      Nie używaj `kubectl apply`. Node klastra Kind to kontener, więc plik
+      wpisujesz przez `docker exec` albo `nerdctl exec`.
+
+      Potem znajdź go w API i sprawdź, **kto jest jego właścicielem**.
+
+      > Nazwa Poda w API dostanie sufiks z nazwą node'a:
+      > `statyczny-lfs458-worker`.
+    hints:
+      - "Katalog jest ten sam co na każdym klastrze kubeadm. Podpowiedź: `docker exec lfs458-worker grep staticPodPath /var/lib/kubelet/config.yaml`."
+      - "Plik zapiszesz tak:\n\n```bash\ndocker exec -i lfs458-worker sh -c 'cat > /etc/kubernetes/manifests/statyczny.yaml' <<'EOF'\n…manifest…\nEOF\n```"
+      - "Manifest to zwykły Pod — bez `namespace`, bo static Pody trafiają do `default`:\n\n```yaml\napiVersion: v1\nkind: Pod\nmetadata:\n  name: statyczny\nspec:\n  containers:\n    - name: web\n      image: nginx:1.27-alpine\n```"
+      - "Kubelet zauważa plik w kilka sekund. Sprawdź: `kubectl get pods -o wide | grep statyczny`. Właściciela pokaże `kubectl get pod statyczny-lfs458-worker -o jsonpath='{.metadata.ownerReferences[0].kind}'`."
+    solution: |
+      ```bash
+      docker exec -i lfs458-worker sh -c 'cat > /etc/kubernetes/manifests/statyczny.yaml' <<'EOF'
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: statyczny
+      spec:
+        containers:
+          - name: web
+            image: nginx:1.27-alpine
+      EOF
+
+      kubectl get pods -o wide | grep statyczny
+      kubectl get pod statyczny-lfs458-worker \
+        -o jsonpath='{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}'
+      ```
+
+      Właścicielem jest **Node**, nie ReplicaSet. Kubelet utworzył w API
+      *mirror pod* — kopię lustrzaną tego, co uruchomił z dysku.
+    checks:
+      - name: "static Pod działa na node'ie lfs458-worker"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: default
+          name: statyczny-lfs458-worker
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+            message: "kubelet potrzebuje kilku sekund od zapisania pliku — sprawdź `kubectl get pods -o wide`"
+          - path: "{.spec.nodeName}"
+            op: eq
+            value: lfs458-worker
+            message: "Pod ma powstać na node'ie lfs458-worker"
+      - name: "właścicielem Poda jest node, a nie kontroler"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: default
+          name: statyczny-lfs458-worker
+        assert:
+          - path: "{.metadata.ownerReferences[*].kind}"
+            op: eq
+            value: Node
+            message: "to ma być static Pod (właściciel: Node), a nie Pod utworzony przez `kubectl apply`"
+      - name: "używa obrazu nginx:1.27-alpine"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: default
+          name: statyczny-lfs458-worker
+        assert:
+          - path: "{.spec.containers[*].image}"
+            op: eq
+            value: "nginx:1.27-alpine"
+
+  - id: task-4
+    points: 2
+    description: |
+      **Znajdź porty komponentów.**
+
+      Dopisz do arkusza **`~/odpowiedzi/lab-03.txt`**:
+
+      | Klucz | Port |
+      |---|---|
+      | `apiserver` | port, na którym serwer API przyjmuje ruch HTTPS |
+      | `etcd-klienci` | port, na którym etcd obsługuje klientów |
+      | `kubelet` | port, na którym kubelet wystawia swoje API |
+
+      Nie zgaduj — wyciągnij je z manifestów static Podów i konfiguracji
+      kubeleta.
+    hints:
+      - "Argumenty apiservera: `kubectl -n kube-system get pod -l component=kube-apiserver -o yaml | grep secure-port`."
+      - "etcd: `kubectl -n kube-system get pod -l component=etcd -o yaml | grep listen-client-urls`."
+      - "Port kubeleta znajdziesz w `kubectl get node lfs458-worker -o jsonpath='{.status.daemonEndpoints.kubeletEndpoint.Port}'`."
+    solution: |
+      ```bash
+      cat >> ~/odpowiedzi/lab-03.txt <<'EOF'
+      apiserver=6443
+      etcd-klienci=2379
+      kubelet=10250
+      EOF
+      ```
+    checks:
+      - name: "podano porty apiservera, etcd i kubeleta"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 apiserver)
+            [ "$V" = '6443' ] || ZLE="$ZLE apiserver"
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 etcd-klienci)
+            [ "$V" = '2379' ] || ZLE="$ZLE etcd-klienci"
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 kubelet)
+            [ "$V" = '10250' ] || ZLE="$ZLE kubelet"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+
+  - id: task-5
+    points: 2
+    optional: true
+    description: |
+      **Zapisz, co wiadomo o static Podzie.**
+
+      Zadanie dodatkowe. Spróbuj usunąć static Poda przez API:
+
+      ```bash
+      kubectl delete pod statyczny-lfs458-worker
+      kubectl get pods -o wide | grep statyczny
+      ```
+
+      Poczekaj kilkanaście sekund i sprawdź ponownie. Potem dopisz obserwację
+      do arkusza **`~/odpowiedzi/lab-03.txt`**:
+
+      | Klucz | Co ma zawierać |
+      |---|---|
+      | `wlasciciel-kind` | rodzaj obiektu w `ownerReferences` Poda |
+      | `wlasciciel-nazwa` | nazwa tego obiektu |
+      | `jak-usunac` | ścieżka do pliku, który trzeba skasować, żeby Pod zniknął na dobre |
+    hints:
+      - "`kubectl get pod statyczny-lfs458-worker -o yaml | grep -A4 ownerReferences`"
+      - "Skoro właścicielem jest node, to źródłem prawdy jest plik na dysku node'a — a nie obiekt w etcd."
+      - "Wartości: `Node`, `lfs458-worker`, `/etc/kubernetes/manifests/statyczny.yaml`."
+    solution: |
+      ```bash
+      kubectl delete pod statyczny-lfs458-worker   # wróci w kilka sekund
+      cat >> ~/odpowiedzi/lab-03.txt <<'EOF'
+      wlasciciel-kind=Node
+      wlasciciel-nazwa=lfs458-worker
+      jak-usunac=/etc/kubernetes/manifests/statyczny.yaml
+      EOF
+      ```
+    checks:
+      - name: "opisano właściciela static Poda"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 wlasciciel-kind)
+            [ "$V" = 'Node' ] || ZLE="$ZLE wlasciciel-kind"
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 wlasciciel-nazwa)
+            [ "$V" = 'lfs458-worker' ] || ZLE="$ZLE wlasciciel-nazwa"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "wskazano plik, którego usunięcie kasuje Poda na dobre"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 03 jak-usunac)
+            printf '%s' "$V" | grep -qE '^/etc/kubernetes/manifests/.*\.yaml$' || ZLE="$ZLE jak-usunac"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "static Pod nadal działa (kubelet odtworzył go po usunięciu przez API)"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: default
+          name: statyczny-lfs458-worker
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+            message: "Pod powinien wrócić sam — jeśli go nie ma, sprawdź, czy plik na node'ie wciąż istnieje"
+
+  # Pytania o fakty klastra — nie zależą od tego, czy kursant zrobił
+  # wcześniejsze zadania, więc nie da się tu utknąć przez pominięcie.
+  - id: task-6
+    points: 2
+    description: |
+      **Odczytaj klaster poleceniem, nie z pamięci.**
+
+      Cztery pytania o sieć i komponenty. Wszystkich odpowiedzi udziela
+      sam klaster — wystarczy wiedzieć, o co go zapytać.
+    quiz:
+      pytania:
+        - pytanie: |
+            Jaki adres ClusterIP ma usługa DNS klastra?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get svc kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}'
+          mylne: ["10.96.0.1", "10.96.0.53", "10.244.0.10"]
+          wskazowka: "kubectl get svc -n kube-system kube-dns"
+
+        - pytanie: |
+            Jaki wycinek puli adresów Podów przydzielono node'owi `lfs458-worker`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get node lfs458-worker -o jsonpath='{.spec.podCIDR}'
+          mylne_z:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes -o jsonpath='{.items[*].spec.podCIDR}'
+          wskazowka: "kubectl get nodes -o custom-columns=WEZEL:.metadata.name,CIDR:.spec.podCIDR"
+
+        - pytanie: |
+            Ile kontenerów ma Pod serwera API w `kube-system`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pod -n kube-system -l component=kube-apiserver \
+                -o jsonpath='{.items[0].spec.containers[*].name}' | wc -w | tr -d ' '
+          mylne: ["2", "3", "0"]
+          wskazowka: "kubectl get pod -n kube-system -l component=kube-apiserver -o jsonpath='{.items[0].spec.containers[*].name}'"
+
+        - pytanie: |
+            Jak nazywa się DaemonSet z CNI pluginem tego klastra?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get ds -n kube-system -o jsonpath='{.items[*].metadata.name}' \
+                | tr ' ' '\n' | grep -v kube-proxy | head -1
+          mylne: ["calico-node", "cilium", "flannel"]
+          wskazowka: "kubectl get ds -n kube-system — jeden z nich to kube-proxy, drugi to CNI"

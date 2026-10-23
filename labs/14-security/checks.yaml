@@ -1,0 +1,514 @@
+module: "14"
+title: "Security — utwardzanie klastra"
+chapter: 14
+chapterTitle: "Security"
+day: 4
+environment: kind-basic
+
+intro: |
+  Kubernetes domyślnie nie jest utwardzony: kontenery działają jako root,
+  każdy Pod rozmawia z każdym, a Secrety leżą w etcd otwartym tekstem.
+  W tym labie dokładasz to, czego brakuje.
+
+  Najważniejsze zadanie to **czwarte**: nie wystarczy utworzyć obiekt
+  `NetworkPolicy` — trzeba sprawdzić, że naprawdę blokuje. Polityka bez
+  CNI plugina, który ją obsługuje, nie robi nic i nie zgłasza błędu.
+
+cleanup:
+  - name: "Usuwam arkusz odpowiedzi"
+    timeout: 30s
+    ignoreError: true
+    script: |
+      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-14.txt"
+      echo "arkusz usunięty"
+  - name: "Usuwam namespace'y modułu"
+    timeout: 5m
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      $K delete namespace lfs458-m14 --ignore-not-found --wait=true
+      $K delete namespace lfs458-m14-scisly --ignore-not-found --wait=true
+  - name: "Usuwam namespace zadania quizowego"
+    timeout: 5m
+    ignoreError: true
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m14-quiz \
+        --ignore-not-found --wait=true
+
+tasks:
+  - id: task-1
+    points: 4
+    description: |
+      **Utwardź Poda.**
+
+      W namespace `lfs458-m14` utwórz Poda **`utwardzony`**
+      (`nginx:1.27-alpine`) spełniającego wszystkie warunki:
+
+      | Ustawienie | Wartość |
+      |---|---|
+      | `runAsNonRoot` | `true` |
+      | `runAsUser` | `10001` |
+      | `allowPrivilegeEscalation` | `false` |
+      | `readOnlyRootFilesystem` | `true` |
+      | `capabilities.drop` | `["ALL"]` |
+      | `seccompProfile.type` | `RuntimeDefault` |
+
+      > Nginx potrzebuje katalogów do zapisu, a system plików jest tylko do
+      > odczytu. Podmontuj `emptyDir` w `/var/cache/nginx`, `/var/run`
+      > i `/tmp` — inaczej kontener nie wystartuje. To realna cena utwardzania.
+    hints:
+      - "`runAsNonRoot`, `runAsUser` i `seccompProfile` mogą stać na poziomie Poda (`spec.securityContext`). Reszta należy do kontenera (`spec.containers[].securityContext`)."
+      - "Nginx z oficjalnego obrazu domyślnie startuje jako root i pisze do `/var/cache/nginx`. Przy `runAsUser: 10001` i systemie tylko do odczytu potrzebuje wolumenów `emptyDir` w tych miejscach."
+      - "Obraz `nginx:1.27-alpine` nasłuchuje na porcie 80, do czego jako nie-root nie ma prawa. Dołóż zmienną, która przestawia go na port powyżej 1024, albo użyj wariantu unprivileged. Najprościej: `nginx:1.27-alpine` + `command: [\"sleep\",\"3600\"]` — do tego zadania liczy się `securityContext`, nie serwowanie stron."
+      - "Szkielet:\n\n```yaml\nspec:\n  securityContext:\n    runAsNonRoot: true\n    runAsUser: 10001\n    seccompProfile: {type: RuntimeDefault}\n  containers:\n    - name: app\n      image: nginx:1.27-alpine\n      command: [\"sleep\", \"3600\"]\n      securityContext:\n        allowPrivilegeEscalation: false\n        readOnlyRootFilesystem: true\n        capabilities: {drop: [\"ALL\"]}\n```"
+    solution: |
+      ```bash
+      kubectl create namespace lfs458-m14
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: utwardzony
+        namespace: lfs458-m14
+      spec:
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 10001
+          runAsGroup: 10001
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: app
+            image: nginx:1.27-alpine
+            command: ["sleep", "3600"]
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            volumeMounts:
+              - {name: cache, mountPath: /var/cache/nginx}
+              - {name: run, mountPath: /var/run}
+              - {name: tmp, mountPath: /tmp}
+        volumes:
+          - {name: cache, emptyDir: {}}
+          - {name: run, emptyDir: {}}
+          - {name: tmp, emptyDir: {}}
+      EOF
+      ```
+    checks:
+      - name: "Pod utwardzony działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m14
+          name: utwardzony
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+            message: "utwardzony kontener często nie wstaje za pierwszym razem — `kubectl describe` powie, czego mu brakuje"
+      - name: "Pod nie działa jako root"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m14
+          name: utwardzony
+        assert:
+          - path: "{.spec.securityContext.runAsNonRoot}"
+            op: eq
+            value: "true"
+          - path: "{.spec.securityContext.runAsUser}"
+            op: eq
+            value: 10001
+      - name: "kontener ma zrzucone uprawnienia i system plików tylko do odczytu"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m14
+          name: utwardzony
+        assert:
+          - path: "{.spec.containers[*].securityContext.allowPrivilegeEscalation}"
+            op: eq
+            value: "false"
+          - path: "{.spec.containers[*].securityContext.readOnlyRootFilesystem}"
+            op: eq
+            value: "true"
+          - path: "{.spec.containers[*].securityContext.capabilities.drop[*]}"
+            op: eq
+            value: ALL
+            message: "zrzuć wszystkie uprawnienia jądra: `capabilities: {drop: [\"ALL\"]}`"
+      - name: "ustawiono profil seccomp"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m14
+          name: utwardzony
+        assert:
+          - path: "{.spec.securityContext.seccompProfile.type}"
+            op: eq
+            value: RuntimeDefault
+      - name: "proces w kontenerze faktycznie nie jest rootem"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" exec -n lfs458-m14 utwardzony \
+              -- id -u
+          stdoutMatches: "^10001$"
+
+  - id: task-2
+    points: 4
+    description: |
+      **Włącz Pod Security Admission.**
+
+      1. Utwórz namespace **`lfs458-m14-scisly`** i oznacz go etykietami
+         wymuszającymi poziom **`restricted`** w trybach `enforce` **i** `warn`
+      2. Sprawdź, że namespace **odrzuca** uprzywilejowanego Poda:
+
+      ```bash
+      kubectl run zly --image=nginx:1.27-alpine -n lfs458-m14-scisly \
+        --privileged --dry-run=server
+      ```
+
+      Serwer ma odpowiedzieć błędem wymieniającym naruszone zasady.
+      Zapisz w arkuszu **`~/odpowiedzi/lab-14.txt`**, pod kluczem `poziom`,
+      nazwę wymuszonego poziomu.
+    hints:
+      - "Etykiety mają postać `pod-security.kubernetes.io/<tryb>=<poziom>`, gdzie tryb to `enforce`, `warn` albo `audit`."
+      - "`kubectl label namespace lfs458-m14-scisly pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted`"
+      - "Do sprawdzenia odrzucenia nie musisz nic tworzyć — `--dry-run=server` przepuszcza żądanie przez admission, ale nie zapisuje."
+    solution: |
+      ```bash
+      kubectl create namespace lfs458-m14-scisly
+      kubectl label namespace lfs458-m14-scisly \
+        pod-security.kubernetes.io/enforce=restricted \
+        pod-security.kubernetes.io/warn=restricted
+
+      # dowód, że działa — serwer odrzuca
+      kubectl run zly --image=nginx:1.27-alpine -n lfs458-m14-scisly \
+        --privileged --dry-run=server || true
+
+      cat >> ~/odpowiedzi/lab-14.txt <<'EOF'
+      poziom=restricted
+      EOF
+      ```
+    checks:
+      - name: "namespace ma wymuszony poziom restricted"
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          name: lfs458-m14-scisly
+        assert:
+          - path: "{.metadata.labels['pod-security\\.kubernetes\\.io/enforce']}"
+            op: eq
+            value: restricted
+            message: "dodaj etykietę pod-security.kubernetes.io/enforce=restricted"
+          - path: "{.metadata.labels['pod-security\\.kubernetes\\.io/warn']}"
+            op: eq
+            value: restricted
+      - name: "zapisano nazwę wymuszonego poziomu"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 14 poziom)
+            [ "$V" = 'restricted' ] || ZLE="$ZLE poziom"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "namespace faktycznie odrzuca uprzywilejowanego Poda"
+        exec:
+          timeout: 60s
+          expectExit: 1
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" run zly-test \
+              --image=nginx:1.27-alpine -n lfs458-m14-scisly \
+              --privileged --dry-run=server 2>&1
+          stdoutMatches: "(?i)violat|forbidden|privileged"
+
+  - id: task-3
+    points: 4
+    description: |
+      **Przygotuj scenę do testu izolacji.**
+
+      W namespace `lfs458-m14` uruchom trzy Pody:
+
+      | Pod | Obraz | Etykieta | Rola |
+      |---|---|---|---|
+      | `serwer` | `hashicorp/http-echo:1.0` (`-text=tajne`, `-listen=:5678`) | `rola=serwer` | cel |
+      | `dozwolony` | `busybox:1.36` (`sleep 3600`) | `rola=klient-ok` | ma mieć dostęp |
+      | `zabroniony` | `busybox:1.36` (`sleep 3600`) | `rola=klient-zly` | nie ma mieć dostępu |
+
+      Na tym etapie **oba** klienty mają dosięgać serwera — polityki jeszcze nie ma.
+      Sprawdź to, zanim przejdziesz dalej:
+
+      ```bash
+      IP=$(kubectl get pod serwer -n lfs458-m14 -o jsonpath='{.status.podIP}')
+      kubectl exec -n lfs458-m14 dozwolony  -- wget -qO- --timeout=3 http://$IP:5678
+      kubectl exec -n lfs458-m14 zabroniony -- wget -qO- --timeout=3 http://$IP:5678
+      ```
+    hints:
+      - "Trzy osobne Pody, każdy z własną etykietą `rola`. Nie potrzebujesz Deploymentów ani Service'ów."
+      - "http-echo przyjmuje argumenty przez `args`, busybox potrzebuje `command: [\"sleep\",\"3600\"]`, żeby się nie zakończył."
+      - "Etykiety są kluczowe — to po nich polityka z zadania 4 będzie rozróżniać klientów."
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata: {name: serwer, namespace: lfs458-m14, labels: {rola: serwer}}
+      spec:
+        containers:
+          - name: echo
+            image: hashicorp/http-echo:1.0
+            args: ["-text=tajne", "-listen=:5678"]
+      ---
+      apiVersion: v1
+      kind: Pod
+      metadata: {name: dozwolony, namespace: lfs458-m14, labels: {rola: klient-ok}}
+      spec:
+        containers:
+          - {name: c, image: "busybox:1.36", command: ["sleep","3600"]}
+      ---
+      apiVersion: v1
+      kind: Pod
+      metadata: {name: zabroniony, namespace: lfs458-m14, labels: {rola: klient-zly}}
+      spec:
+        containers:
+          - {name: c, image: "busybox:1.36", command: ["sleep","3600"]}
+      EOF
+      ```
+    checks:
+      - name: "wszystkie trzy Pody działają"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m14
+          labelSelector: "rola in (serwer,klient-ok,klient-zly)"
+        assert:
+          - path: "{.items[*].status.phase}"
+            op: eq
+            value: Running
+            quantifier: all
+            count:
+              op: eq
+              value: 3
+            message: "potrzebne są trzy Pody: serwer, dozwolony i zabroniony"
+      - name: "serwer odpowiada wewnątrz klastra"
+        exec:
+          timeout: 60s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            IP=$($K get pod serwer -n lfs458-m14 -o jsonpath='{.status.podIP}')
+            $K exec -n lfs458-m14 dozwolony -- wget -qO- --timeout=5 "http://$IP:5678"
+          stdoutMatches: "tajne"
+
+  - id: task-4
+    points: 4
+    description: |
+      **Odetnij ruch i wpuść tylko jednego klienta.**
+
+      Utwórz w `lfs458-m14` NetworkPolicy **`tylko-dozwolony`**, która:
+
+      - dotyczy Podów z etykietą **`rola=serwer`**
+      - blokuje **cały** ruch przychodzący
+      - **poza** ruchem z Podów z etykietą `rola=klient-ok` na port `5678`
+
+      Potem **sprawdź doświadczalnie**, że działa:
+
+      ```bash
+      IP=$(kubectl get pod serwer -n lfs458-m14 -o jsonpath='{.status.podIP}')
+      kubectl exec -n lfs458-m14 dozwolony  -- wget -qO- --timeout=4 http://$IP:5678  # ma zadziałać
+      kubectl exec -n lfs458-m14 zabroniony -- wget -qO- --timeout=4 http://$IP:5678  # ma się nie udać
+      ```
+
+      > Utworzenie obiektu **nie jest** dowodem. Dowodem jest timeout
+      > u zabronionego klienta.
+    hints:
+      - "Polityka wybiera Pody, których **broni**, przez `spec.podSelector`. Tu ma to być `rola: serwer`."
+      - "`policyTypes: [Ingress]` plus lista `ingress` z jedną regułą. Wszystko, czego reguła nie dopuszcza, jest blokowane."
+      - "Źródło ruchu podaje się w `ingress[].from[].podSelector`, a port w `ingress[].ports[]`."
+      - "Komplet:\n\n```yaml\nspec:\n  podSelector:\n    matchLabels: {rola: serwer}\n  policyTypes: [Ingress]\n  ingress:\n    - from:\n        - podSelector:\n            matchLabels: {rola: klient-ok}\n      ports:\n        - protocol: TCP\n          port: 5678\n```"
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: tylko-dozwolony
+        namespace: lfs458-m14
+      spec:
+        podSelector:
+          matchLabels:
+            rola: serwer
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              - podSelector:
+                  matchLabels:
+                    rola: klient-ok
+            ports:
+              - protocol: TCP
+                port: 5678
+      EOF
+
+      IP=$(kubectl get pod serwer -n lfs458-m14 -o jsonpath='{.status.podIP}')
+      kubectl exec -n lfs458-m14 dozwolony  -- wget -qO- --timeout=4 http://$IP:5678
+      kubectl exec -n lfs458-m14 zabroniony -- wget -qO- --timeout=4 http://$IP:5678 || echo "zablokowany — tak ma być"
+      ```
+    checks:
+      - name: "polityka broni Podów z etykietą rola=serwer"
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          namespace: lfs458-m14
+          name: tylko-dozwolony
+        assert:
+          - path: "{.spec.podSelector.matchLabels['rola']}"
+            op: eq
+            value: serwer
+          - path: "{.spec.policyTypes[*]}"
+            op: eq
+            value: Ingress
+            quantifier: any
+          - path: "{.spec.ingress[*].from[*].podSelector.matchLabels['rola']}"
+            op: eq
+            value: klient-ok
+            message: "reguła ma wpuszczać wyłącznie Pody z etykietą rola=klient-ok"
+      - name: "dozwolony klient nadal dosięga serwera"
+        exec:
+          timeout: 60s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            IP=$($K get pod serwer -n lfs458-m14 -o jsonpath='{.status.podIP}')
+            $K exec -n lfs458-m14 dozwolony -- wget -qO- --timeout=6 "http://$IP:5678"
+          stdoutMatches: "tajne"
+      - name: "zabroniony klient jest naprawdę odcięty"
+        exec:
+          timeout: 90s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            IP=$($K get pod serwer -n lfs458-m14 -o jsonpath='{.status.podIP}')
+            if $K exec -n lfs458-m14 zabroniony -- wget -qO- --timeout=6 "http://$IP:5678" 2>/dev/null; then
+              echo "WYNIK: połączenie przeszło — polityka NIE działa"
+            else
+              echo "WYNIK: połączenie zablokowane"
+            fi
+          stdoutMatches: "WYNIK: połączenie zablokowane"
+
+  - id: task-5
+    points: 3
+    optional: true
+    description: |
+      **Zbadaj bramki swojego apiservera.**
+
+      Zadanie dodatkowe. Sprawdź, jak skonfigurowana jest autoryzacja
+      i admission w Twoim klastrze, i opisz to w arkuszu
+      **`~/odpowiedzi/lab-14.txt`**:
+
+      | Klucz | Co ma zawierać |
+      |---|---|
+      | `tryby-autoryzacji` | wartość flagi `--authorization-mode` |
+      | `psa-wbudowane` | `tak` albo `nie` — czy PodSecurity jest kontrolerem wbudowanym |
+      | `kod-401` | co znaczy kod 401: `uwierzytelnienie` czy `autoryzacja` |
+
+      ```bash
+      kubectl -n kube-system get pod -l component=kube-apiserver \
+        -o jsonpath='{.items[0].spec.containers[0].command}' | tr ',' '\n' | grep -E 'authorization|admission'
+      ```
+    hints:
+      - "Argumenty apiservera są widoczne w jego static Podzie — to ten sam Pod, co w module 03."
+      - "Typowa wartość dla klastra kubeadm/Kind to `Node,RBAC`."
+      - "PodSecurity jest wbudowanym kontrolerem admission od Kubernetesa 1.23, domyślnie włączonym od 1.25 — nie trzeba go instalować."
+    solution: |
+      ```bash
+      kubectl -n kube-system get pod -l component=kube-apiserver \
+        -o jsonpath='{.items[0].spec.containers[0].command}' \
+        | tr ',' '\n' | grep -E 'authorization|admission'
+
+      cat >> ~/odpowiedzi/lab-14.txt <<'EOF'
+      tryby-autoryzacji=Node,RBAC
+      psa-wbudowane=tak
+      kod-401=uwierzytelnienie
+      EOF
+      ```
+    checks:
+      - name: "odczytano tryby autoryzacji apiservera"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 14 tryby-autoryzacji)
+            printf '%s' "$V" | grep -qE '(?i)node.*rbac|rbac.*node' || ZLE="$ZLE tryby-autoryzacji"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "wiadomo, że PodSecurity jest wbudowane"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 14 psa-wbudowane)
+            printf '%s' "$V" | grep -qE '(?i)^tak$' || ZLE="$ZLE psa-wbudowane"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "rozróżniono 401 od 403"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 14 kod-401)
+            printf '%s' "$V" | grep -qE '(?i)uwierzytelnien' || ZLE="$ZLE kod-401"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+
+  - id: task-6
+    points: 2
+    description: |
+      **Zapytaj klaster o jego własne zabezpieczenia.**
+
+      Lab utworzył konto o minimalnych uprawnieniach i namespace z wymuszonym
+      poziomem Pod Security Admission. Sprawdź, co klaster na ich temat mówi.
+    quiz:
+      przygotuj:
+        timeout: 3m
+        script: |
+          K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+          $K create namespace lfs458-m14-quiz --dry-run=client -o yaml | $K apply -f - >/dev/null
+          $K label namespace lfs458-m14-quiz \
+            pod-security.kubernetes.io/enforce=baseline --overwrite >/dev/null
+          $K create serviceaccount kontroler -n lfs458-m14-quiz \
+            --dry-run=client -o yaml | $K apply -f - >/dev/null
+          $K create role tylko-cm --verb=get,list --resource=configmaps -n lfs458-m14-quiz \
+            --dry-run=client -o yaml | $K apply -f - >/dev/null
+          $K create rolebinding kontroler-cm --role=tylko-cm \
+            --serviceaccount=lfs458-m14-quiz:kontroler -n lfs458-m14-quiz \
+            --dry-run=client -o yaml | $K apply -f - >/dev/null
+      pytania:
+        - pytanie: |
+            Czy ServiceAccount `kontroler` może odczytać Secrety w swoim namespace?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" auth can-i get secrets -n lfs458-m14-quiz \
+                --as=system:serviceaccount:lfs458-m14-quiz:kontroler 2>/dev/null || true
+          mylne: ["yes"]
+          wskazowka: "kubectl auth can-i get secrets -n lfs458-m14-quiz --as=system:serviceaccount:lfs458-m14-quiz:kontroler"
+
+        - pytanie: |
+            Jaki poziom Pod Security Admission jest **wymuszany** w `lfs458-m14-quiz`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get namespace lfs458-m14-quiz \
+                -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}'
+          mylne: ["restricted", "privileged", "default"]
+          wskazowka: "kubectl get ns lfs458-m14-quiz --show-labels"
+
+        - pytanie: |
+            Jakie tryby autoryzacji ma włączony serwer API tego klastra?
+          odpowiedz:
+            script: |
+              # Rozdzielamy argumenty po SPACJACH, nie po przecinkach — inaczej
+              # rozcięlibyśmy samą wartość `Node,RBAC` na dwa kawałki.
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" -n kube-system get pod -l component=kube-apiserver \
+                -o jsonpath='{.items[0].spec.containers[0].command[*]}' \
+                | tr ' ' '\n' | grep -oE '^--authorization-mode=.*' | cut -d= -f2
+          mylne: ["RBAC", "AlwaysAllow", "ABAC,RBAC"]
+          wskazowka: "argumenty static Poda apiservera — szukaj --authorization-mode"

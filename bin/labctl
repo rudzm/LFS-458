@@ -1,0 +1,1565 @@
+#!/usr/bin/env python3
+"""
+labctl — narzędzie szkoleniowe LFS458: środowiska, laby, sprawdzanie zadań.
+
+Silnik sprawdzania jest cienki celowo: ścieżki w checks.yaml są zapisane
+w składni jsonpath kubectl, więc całą pracę parsowania wykonuje `kubectl
+get -o jsonpath`, a nie własna implementacja.
+
+    labctl doctor              czego brakuje na stanowisku
+    labctl env list            środowiska i ich stan
+    labctl env up basic        postaw klaster (basic | ha | vm)
+    labctl env down basic
+    labctl lab 01              treść laba
+    labctl next 01             następne niezaliczone zadanie
+    labctl check 01            sprawdź (--task, --watch, --verbose)
+    labctl hint 01             kolejna podpowiedź
+    labctl solution 01         rozwiązanie referencyjne (dla trenera)
+    labctl setup 10            przygotuj moduł (10 i 12 tego wymagają)
+    labctl cleanup 01          posprzątaj po module
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+import ssl
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("brak modułu PyYAML — zainstaluj: sudo apt install python3-yaml")
+
+ROOT = Path(__file__).resolve().parent.parent
+LABS = ROOT / "labs"
+STATE_DIR = Path(os.environ.get("LABCTL_STATE", Path.home() / ".lfs458"))
+
+# ── środowiska ────────────────────────────────────────────────────────────────
+
+ENVS = {
+    "kind-basic": {
+        "alias": "basic",
+        "driver": "kind",
+        "config": "env/kind/lfs458.yaml",
+        "cluster": "lfs458",
+        "context": "kind-lfs458",
+        "addons": "env/kind/addons.sh",
+        "loadbalancer": True,
+        "opis": "klaster 3-węzłowy — 14 z 18 modułów",
+    },
+    "kind-ha": {
+        "alias": "ha",
+        "driver": "kind",
+        "config": "env/kind/lfs458-ha.yaml",
+        "cluster": "lfs458-ha",
+        "context": "kind-lfs458-ha",
+        "addons": None,
+        "loadbalancer": False,
+        "opis": "3 × control plane ze stacked etcd — moduł 15",
+    },
+    "vagrant-kubeadm": {
+        "alias": "vm",
+        "driver": "vagrant",
+        "dir": "env/vm/kubeadm",
+        "context": "kubeadm-lfs458",
+        "opis": "dwie maszyny bez klastra — moduł 02",
+    },
+}
+ALIASES = {v["alias"]: k for k, v in ENVS.items()}
+
+CPK_IMAGE = os.environ.get(
+    "CPK_IMAGE", "registry.k8s.io/cloud-provider-kind/cloud-controller-manager:v0.12.0"
+)
+CPK_NAME = "lfs458-cloud-provider"
+
+# ── wygląd ────────────────────────────────────────────────────────────────────
+
+class C:
+    on = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+    @classmethod
+    def _w(cls, code, s):
+        return f"\033[{code}m{s}\033[0m" if cls.on else s
+    @classmethod
+    def green(cls, s):  return cls._w("32", s)
+    @classmethod
+    def red(cls, s):    return cls._w("31", s)
+    @classmethod
+    def yellow(cls, s): return cls._w("33", s)
+    @classmethod
+    def blue(cls, s):   return cls._w("36", s)
+    @classmethod
+    def dim(cls, s):    return cls._w("2", s)
+    @classmethod
+    def bold(cls, s):   return cls._w("1", s)
+
+OK, BAD = "✓", "✗"
+
+def die(msg: str) -> "NoReturn":
+    print(C.red(f"błąd: {msg}"), file=sys.stderr)
+    sys.exit(1)
+
+# ── moduły ────────────────────────────────────────────────────────────────────
+
+def module_dir(num: str) -> Path:
+    num = str(num).zfill(2)
+    hits = sorted(p for p in LABS.glob(f"{num}-*") if p.is_dir())
+    if not hits:
+        die(f"nie ma modułu {num}; dostępne: " + ", ".join(sorted(
+            p.name.split('-')[0] for p in LABS.iterdir() if p.is_dir())))
+    return hits[0]
+
+def load_module(num: str) -> tuple[dict, Path]:
+    d = module_dir(num)
+    with open(d / "checks.yaml", encoding="utf-8") as fh:
+        return yaml.safe_load(fh), d
+
+def env_for(mod: dict) -> dict:
+    name = mod.get("environment")
+    if not name:
+        return ENVS["kind-basic"]
+    if name not in ENVS:
+        die(f"moduł {mod.get('module')} wymaga nieznanego środowiska '{name}'")
+    return ENVS[name]
+
+# Arkusze odpowiedzi trzymamy w katalogu domowym, nie w repozytorium:
+# ścieżka jest wtedy ta sama niezależnie od tego, skąd uruchomiono `labctl`
+# — a binarka bywa podlinkowana z /usr/local/bin.
+ODPOWIEDZI = Path.home() / "odpowiedzi"
+
+
+def run_env(mod: dict) -> dict:
+    """Zmienne środowiskowe dla skryptów z checks.yaml."""
+    env = os.environ.copy()
+    env["KUBECONTEXT"] = env_for(mod)["context"]
+    env.setdefault("CONTAINER_CLI", container_cli())
+    env["LFS458_ROOT"] = str(ROOT)
+    env["ODPOWIEDZI"] = str(ODPOWIEDZI)
+    return env
+
+def engine() -> tuple[str | None, str]:
+    """Zwraca (nazwa CLI, stan): "ok", "grupa", "demon" albo "brak".
+
+    Stan "grupa" to najczęstsza pułapka na świeżym stanowisku: po
+    `usermod -aG docker $USER` demon działa, ale bieżąca sesja nie ma jeszcze
+    tej grupy — widać go dopiero po przelogowaniu.
+    """
+    found = None
+    for cli in ("docker", "nerdctl", "podman"):
+        if not shutil.which(cli):
+            continue
+        found = found or cli
+        if subprocess.run([cli, "info"], capture_output=True).returncode == 0:
+            return cli, "ok"
+        if cli == "docker" and shutil.which("sg"):
+            przez_grupe = subprocess.run(["sg", "docker", "-c", "docker info"],
+                                         capture_output=True)
+            if przez_grupe.returncode == 0:
+                return cli, "grupa"
+    return found, ("demon" if found else "brak")
+
+def container_cli() -> str:
+    """Nazwa dla skryptów z checks.yaml (CONTAINER_CLI) — zawsze jakaś."""
+    cli, _ = engine()
+    return cli or "docker"
+
+# ── kubectl ───────────────────────────────────────────────────────────────────
+
+def kubectl(ctx: str, args: list[str], timeout: int = 30) -> tuple[int, str, str]:
+    cmd = ["kubectl", "--context", ctx, *args]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout.strip(), p.stderr.strip()
+    except FileNotFoundError:
+        die("nie znaleziono kubectl")
+    except subprocess.TimeoutExpired:
+        return 124, "", "timeout"
+
+def resource_args(res: dict) -> list[str]:
+    """Buduje argumenty `kubectl get` dla opisu zasobu z checks.yaml.
+
+    Nazwy zasobu NIE tworzymy przez dodanie „s" do rodzaju — liczba mnoga
+    w Kubernetesie bywa nieregularna (`Ingress` → `ingresses`,
+    `NetworkPolicy` → `networkpolicies`), a przy zasobach własnych jest
+    dowolna (CRD `Zadanie` ma plural `zadania`). Podajemy więc rodzaj
+    w liczbie pojedynczej i pozwalamy kubectlowi rozwiązać go przez discovery;
+    grupę doklejamy, żeby nie było dwuznaczności między grupami.
+    """
+    kind, api = res["kind"], res.get("apiVersion", "v1")
+    target = kind.lower()
+    if "/" in api:                        # Deployment → deployment.apps
+        target = f"{target}.{api.split('/')[0]}"
+    args = ["get", target]
+    if res.get("name"):
+        args.append(res["name"])
+    if res.get("labelSelector"):
+        args += ["-l", res["labelSelector"]]
+    if res.get("allNamespaces"):
+        args.append("-A")
+    elif res.get("namespace"):
+        args += ["-n", res["namespace"]]
+    return args
+
+# ── asercje ───────────────────────────────────────────────────────────────────
+
+POSIX = {"[:space:]": r"\s", "[:alpha:]": "a-zA-Z", "[:digit:]": "0-9",
+         "[:alnum:]": "a-zA-Z0-9", "[:upper:]": "A-Z", "[:lower:]": "a-z"}
+
+def to_python_re(pat: str) -> str:
+    """checks.yaml używa składni Go/RE2 — tłumaczymy klasy POSIX."""
+    for posix, repl in POSIX.items():
+        pat = pat.replace(posix, repl)
+    return pat
+
+def norm(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+def as_number(s: str):
+    m = re.search(r"-?\d+(\.\d+)?", str(s))
+    return float(m.group(0)) if m else None
+
+def values_of(out: str, path: str) -> list[str]:
+    """Wynik jsonpath: dla ścieżek z [*] kubectl skleja wartości spacją."""
+    if not out:
+        return []
+    return out.split() if "[*]" in path or "range" in path else [out]
+
+def check_assert(ctx: str, res: dict, a: dict) -> tuple[bool, str]:
+    path, op = a["path"], a.get("op")
+    rc, out, err = kubectl(ctx, resource_args(res) + ["-o", f"jsonpath={path}"])
+    if rc != 0:
+        if op == "notExists":
+            return True, ""
+        return False, (err.splitlines()[0] if err else "nie udało się odczytać zasobu")
+
+    vals = values_of(out, path)
+
+    if op is None:
+        ok = True                      # sama obecność ścieżki; resztę rozstrzyga `count`
+        if "count" not in a:
+            return False, "asercja bez `op` i bez `count` — popraw checks.yaml"
+    elif op == "exists":
+        ok = bool(vals)
+    elif op == "notExists":
+        ok = not vals
+    else:
+        expected = a.get("value")
+        if "valuePath" in a:
+            _, vout, _ = kubectl(ctx, resource_args(res) + ["-o", f"jsonpath={a['valuePath']}"])
+            expected = vout
+        ok = compare(vals, op, expected, a.get("quantifier", "all"))
+
+    if ok and "count" in a:
+        c = a["count"]
+        n, want = len(vals), as_number(c["value"])
+        ok = {"eq": n == want, "gte": n >= want, "gt": n > want,
+              "lte": n <= want, "lt": n < want}.get(c.get("op", "eq"), n == want)
+        if not ok:
+            return False, a.get("message") or f"spodziewam się {c.get('op','eq')} {c['value']}, jest {n}"
+
+    return ok, "" if ok else (a.get("message") or f"{path}: '{out}' nie spełnia {op} {a.get('value')}")
+
+def compare(vals: list[str], op: str, expected, quantifier: str) -> bool:
+    if not vals:
+        # Pusty wynik: `none` jest spełnione z definicji (nie ma czego naruszyć),
+        # np. „żaden Pod nie jest w CrashLoopBackOff" przy zerze Podów w tym
+        # stanie. Dla `all`/`any` brak wartości traktujemy jako niespełnienie.
+        return quantifier == "none"
+
+    def one(v: str) -> bool:
+        if op == "eq":
+            return v == norm(expected)
+        if op == "matches":
+            return re.search(to_python_re(norm(expected)), v) is not None
+        if op == "contains":
+            return norm(expected) in v
+        if op == "oneOf":
+            allowed = [x.strip() for x in norm(expected).split(",")]
+            return v in allowed
+        if op in ("gte", "gt", "lte", "lt"):
+            got, want = as_number(v), as_number(expected)
+            if got is None or want is None:
+                return False
+            return {"gte": got >= want, "gt": got > want,
+                    "lte": got <= want, "lt": got < want}[op]
+        raise SystemExit(f"nieznany operator asercji: {op}")
+
+    if quantifier == "any":
+        return any(one(v) for v in vals)
+    if quantifier == "none":
+        return not any(one(v) for v in vals)
+    return all(one(v) for v in vals)
+
+def check_resource(ctx: str, c: dict) -> tuple[bool, list[str]]:
+    res = c["resource"]
+    if res.get("mustNotExist"):
+        rc, _, _ = kubectl(ctx, resource_args(res))
+        return (rc != 0, [] if rc != 0 else ["obiekt nadal istnieje, a nie powinien"])
+    problems = []
+    for a in c.get("assert", []):
+        ok, msg = check_assert(ctx, res, a)
+        if not ok:
+            problems.append(msg)
+    return (not problems, problems)
+
+def check_exec(ctx: str, c: dict, env: dict) -> tuple[bool, list[str]]:
+    spec = c["exec"]
+    secs = parse_timeout(spec.get("timeout", "60s"))
+    # Bez `set -e`: kilka checków opiera się na tym, że polecenie z kodem
+    # wyjścia ≠ 0 (np. `kubectl auth can-i` z odpowiedzią „no") nie przerywa
+    # skryptu — liczy się dopiero to, co trafi na stdout.
+    try:
+        p = subprocess.run(["bash", "-c", spec["script"]], capture_output=True,
+                           text=True, timeout=secs, env=env, cwd=ROOT)
+    except subprocess.TimeoutExpired:
+        return False, [f"skrypt nie zdążył w {spec.get('timeout')}"]
+    out = (p.stdout or "") + (p.stderr or "")
+    if "expectExit" in spec and p.returncode != spec["expectExit"]:
+        return False, [f"spodziewany kod wyjścia {spec['expectExit']}, jest {p.returncode}"]
+    pat = spec.get("stdoutMatches")
+    if pat and not re.search(to_python_re(pat), out, re.MULTILINE):
+        first = next((l for l in out.splitlines() if l.strip()), "(brak wyjścia)")
+        return False, [f"wyjście nie zawiera '{pat}' — dostałem: {first[:120]}"]
+    return True, []
+
+class BezPrzekierowan(urllib.request.HTTPRedirectHandler):
+    """Nie podąża za 3xx — część checków sprawdza właśnie samo przekierowanie.
+
+    Moduł 09 wymaga kodu 308 od ingress-nginx po włączeniu TLS. Domyślny
+    urllib poszedłby za nim na https://<host>/, czego DNS nie rozwiąże,
+    i check wywracałby się z „Name or service not known" zamiast zobaczyć 308.
+    """
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def check_http(c: dict) -> tuple[bool, list[str]]:
+    spec = c["http"]
+    req = urllib.request.Request(spec["url"])
+    if spec.get("host"):
+        req.add_header("Host", spec["host"])
+    # Handlery trzeba podać przy budowie openera: `add_handler` nie zastąpi
+    # domyślnego HTTPSHandlera, więc własny kontekst SSL zostałby zignorowany
+    # i `insecure: true` nic by nie dawało.
+    handlers: list = [BezPrzekierowan]
+    if spec.get("insecure"):
+        luzny = ssl.create_default_context()
+        luzny.check_hostname = False
+        luzny.verify_mode = ssl.CERT_NONE
+        handlers.append(urllib.request.HTTPSHandler(context=luzny))
+    opener = urllib.request.build_opener(*handlers)
+    try:
+        with opener.open(req, timeout=parse_timeout(spec.get("timeout", "15s"))) as r:
+            status, body = r.status, r.read(65536).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:                      # 3xx/4xx/5xx
+        status, body = e.code, e.read(65536).decode("utf-8", "replace")
+    except Exception as e:
+        return False, [f"{spec['url']} nieosiągalny: {e}"]
+    if "expectStatus" in spec and status != spec["expectStatus"]:
+        return False, [f"{spec['url']} zwrócił {status}, spodziewam się {spec['expectStatus']}"]
+    pat = spec.get("bodyMatches")
+    if pat and not re.search(to_python_re(pat), body, re.MULTILINE):
+        return False, [f"odpowiedź nie zawiera '{pat}'"]
+    return True, []
+
+def parse_timeout(v) -> int:
+    s = str(v).strip()
+    m = re.match(r"^(\d+)([smh]?)$", s)
+    if not m:
+        return 60
+    n, unit = int(m.group(1)), m.group(2)
+    return n * {"": 1, "s": 1, "m": 60, "h": 3600}[unit]
+
+def run_check(ctx: str, c: dict, env: dict) -> tuple[bool, list[str]]:
+    if "resource" in c:
+        return check_resource(ctx, c)
+    if "exec" in c:
+        return check_exec(ctx, c, env)
+    if "http" in c:
+        return check_http(c)
+    return False, ["check bez resource/exec/http — popraw checks.yaml"]
+
+# ── prezentacja wyników ───────────────────────────────────────────────────
+
+ZROBIONE, TERAZ, CZEKA = "✓", "●", "○"
+
+def tytul_zadania(t: dict) -> str:
+    """Pierwszy wytłuszczony fragment opisu — służy za nazwę zadania.
+
+    Bierzemy treść spomiędzy `**…**`, a nie całą linię: niejedno zadanie
+    ma po wytłuszczeniu dopisek w rodzaju „*(zadanie dodatkowe)*”.
+    """
+    for l in (t.get("description") or "").splitlines():
+        l = l.strip()
+        m = re.match(r"\*\*(.+?)\*\*", l)
+        if m:
+            return m.group(1).rstrip(".").strip()
+        if l:
+            return l[:52]
+    if t.get("quiz"):
+        return "Pytania o klaster"
+    return t["id"]
+
+
+SUROWE = [
+    (re.compile(r'namespaces? "([^"]+)" not found'),
+     lambda m: f'namespace „{m.group(1)}” jeszcze nie istnieje'),
+    (re.compile(r'(\w+) "([^"]+)" not found'),
+     lambda m: f'nie ma jeszcze obiektu „{m.group(2)}”'),
+    (re.compile(r"the server doesn't have a resource type \"?([^\"]+)"),
+     lambda m: f'klaster nie zna zasobu „{m.group(1)}” — czy CRD jest już utworzony?'),
+    (re.compile(r'nie udało się odczytać zasobu'),
+     lambda m: 'obiektu jeszcze nie ma'),
+]
+
+def po_ludzku(komunikat: str) -> str:
+    """Zamienia surowe komunikaty kubectl na zdanie po polsku."""
+    for wzorzec, zamiana in SUROWE:
+        m = wzorzec.search(komunikat)
+        if m:
+            return zamiana(m)
+    return komunikat
+
+
+def kolumna(tekst: str, szerokosc: int, barwa=lambda x: x) -> str:
+    """Wyrównuje do szerokości liczonej w znakach widocznych.
+
+    `f"{C.dim('0/2'):<14}"` wyrównałoby do 14 znaków RAZEM z kodami ANSI,
+    czyli w praktyce do trzech — stąd rozjeżdżające się kolumny.
+    """
+    dopelnienie = " " * max(0, szerokosc - len(tekst))
+    return barwa(tekst) + dopelnienie
+
+
+def md_na_terminal(tekst: str, wciecie: str = "  ") -> str:
+    """Zamienia Markdown opisu zadania na czytelny tekst w terminalu.
+
+    Opisy zadań są pisane w Markdownie, bo trafiają też do lab.md i (kiedyś)
+    na stronę. W terminalu interesuje nas tylko wyróżnienie: **pogrubienie**,
+    `kod` i bloki kodu. Tabele zostawiamy jak są — w materiałach są wąskie
+    i czytają się dobrze.
+    """
+    wynik, w_kodzie = [], False
+    for linia in tekst.rstrip().split("\n"):
+        t = linia.rstrip()
+        if t.strip().startswith("```"):
+            w_kodzie = not w_kodzie
+            continue
+        if w_kodzie:
+            wynik.append(wciecie + "  " + C.blue(t.strip()))
+            continue
+        t = re.sub(r"\*\*([^*]+)\*\*", lambda m: C.bold(m.group(1)), t)
+        t = re.sub(r"`([^`]+)`", lambda m: C.blue(m.group(1)), t)
+        t = re.sub(r"^(\s*)> ", lambda m: m.group(1) + C.dim("│ "), t)
+        wynik.append(wciecie + t if t.strip() else "")
+    return "\n".join(wynik)
+
+
+def pasek(zdobyte: int, total: int, szerokosc: int = 22) -> str:
+    if total <= 0:
+        return ""
+    pelne = round(szerokosc * zdobyte / total)
+    kolor = C.green if zdobyte == total else C.yellow
+    return kolor("█" * pelne) + C.dim("░" * (szerokosc - pelne))
+
+
+# ── stan postępu ──────────────────────────────────────────────────────────────
+
+def state_path() -> Path:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    return STATE_DIR / "progress.json"
+
+def load_state() -> dict:
+    p = state_path()
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+def save_state(st: dict) -> None:
+    state_path().write_text(json.dumps(st, indent=2, ensure_ascii=False), encoding="utf-8")
+
+# ── polecenia ─────────────────────────────────────────────────────────────────
+
+# Czas stawiania — pokazujemy go, zanim zabierzemy komuś kwadrans.
+CZAS_STAWIANIA = {"kind-basic": "około 3 minut",
+                  "kind-ha": "około 2 minut",
+                  "vagrant-kubeadm": "kilkanaście minut (dwie maszyny wirtualne)"}
+DROGIE = {"vagrant-kubeadm"}          # tu pytamy o zgodę, zamiast po prostu ruszać
+
+
+def srodowisko_stoi(e: dict) -> bool:
+    """Czy infrastruktura istnieje — co nie znaczy, że klaster już odpowiada.
+
+    W module 02 maszyny stoją od początku, ale kontekst `kubeadm-lfs458`
+    powstaje dopiero, gdy kursant wyeksportuje kubeconfig w zadaniu 1.
+    Te dwie rzeczy trzeba rozróżniać, inaczej automat stawiałby maszyny,
+    które już stoją.
+    """
+    if e["driver"] == "kind":
+        return e["cluster"] in kind_clusters()
+    return any((ROOT / e["dir"] / ".vagrant" / "machines").glob("*/*/id"))
+
+
+def zapewnij_srodowisko(mod: dict, *, pytaj: bool = True, pomin: bool = False) -> bool:
+    """Stawia środowisko modułu, jeśli jeszcze nie stoi."""
+    e = env_for(mod)
+    if srodowisko_stoi(e):
+        return True
+    if pomin:
+        print(C.yellow(f"  środowisko {e['alias']} nie stoi, a podano --no-env"))
+        return False
+
+    nazwa = next(k for k, v in ENVS.items() if v is e)
+    print()
+    print(C.bold(f"Moduł {mod['module']} wymaga środowiska „{nazwa}”, które jeszcze nie stoi."))
+    print(C.dim(f"  {e['opis']} · stawianie trwa {CZAS_STAWIANIA.get(nazwa, 'chwilę')}"))
+    if nazwa in DROGIE and pytaj and sys.stdin.isatty():
+        print()
+        try:
+            odp = input("  Postawić teraz? [T/n] ").strip().lower()
+        except EOFError:
+            odp = "t"
+        if odp and odp not in ("t", "tak", "y", "yes"):
+            print(C.dim(f"  pominięte — gdy zechcesz: labctl env up {e['alias']}"))
+            return False
+    elif nazwa in DROGIE and not sys.stdin.isatty():
+        print(C.yellow("  to długa operacja, a sesja nie jest interaktywna — pomijam"))
+        print(C.dim(f"  postaw ręcznie: labctl env up {e['alias']}"))
+        return False
+    return env_up(nazwa, e) == 0
+
+
+def cluster_reachable(mod: dict, *, cicho: bool = False) -> bool:
+    """Jedno sprawdzenie zamiast powtarzania tego samego błędu przy każdym checku."""
+    e = env_for(mod)
+    rc, _, err = kubectl(e["context"], ["version", "-o", "json"], timeout=15)
+    if rc == 0:
+        return True
+    if cicho:
+        return False
+    print()
+    print(C.red(f"Brak połączenia z klastrem (kontekst {e['context']})."))
+    print(C.dim(f"  {err.splitlines()[0][:150] if err else 'kubectl nie odpowiedział'}"))
+    print()
+    if mod.get("apiBywaNiedostepne"):
+        print("W tym module to **spodziewany** stan: któreś zadanie celowo psuje")
+        print("control plane. Napraw go, wchodząc na węzeł:")
+        print(C.dim("  docker exec -it lfs458-control-plane bash"))
+        print()
+        print(C.dim("Jeśli utknąłeś na dobre:  labctl env reset basic"))
+        print()
+        return False
+    if e["driver"] == "vagrant":
+        print("To jest poprawny stan, dopóki nie wyeksportujesz kubeconfiga na hosta")
+        print("w zadaniu 1 tego modułu. Maszyny stawia:")
+        print(C.dim(f"  labctl env up {e['alias']}"))
+    else:
+        print("Postaw środowisko tego modułu:")
+        print(C.dim(f"  labctl env up {e['alias']}"))
+    print()
+    return False
+
+def id_zadania(mod: dict, wybor: str | None) -> str | None:
+    """Zamienia to, co podał użytkownik, w istniejące `task-N`.
+
+    Przyjmujemy zarówno `--task task-8`, jak i `--task 8` — i przerywamy, gdy
+    numer nie istnieje. Bez tego literówka w `--task` filtrowała wszystkie
+    zadania i raport wychodził „moduł zaliczony, 0/0 pkt", czyli dokładnie
+    odwrotnie niż prawda.
+    """
+    if not wybor:
+        return None
+    istniejace = [t["id"] for t in (mod.get("tasks") or [])]
+    for kandydat in (wybor, f"task-{wybor}", f"task-{wybor.lstrip('0') or '0'}"):
+        if kandydat in istniejace:
+            return kandydat
+    print(C.red(f"\n  Moduł {mod['module']} nie ma zadania „{wybor}”."))
+    print(C.dim("  Dostępne: " + ", ".join(istniejace) + "\n"))
+    raise SystemExit(2)
+
+
+def cmd_check(args) -> int:
+    mod, _ = load_module(args.module)
+    wybrane = id_zadania(mod, getattr(args, "task", None))
+    if not zapewnij_srodowisko(mod, pomin=getattr(args, "no_env", False)):
+        return 2
+    if not cluster_reachable(mod):
+        return 2
+    ctx = env_for(mod)["context"]
+    env = run_env(mod)
+    num = str(mod["module"])
+
+    while True:
+        if args.watch:
+            print("\033[2J\033[H", end="")          # czysty ekran przy podglądzie
+        print()
+        rozdz = f" · rozdział {mod['chapter']}" if mod.get("chapter") else ""
+        print(C.bold(f"  Moduł {num}{rozdz} — {mod['title'].split(' — ')[0]}"))
+        obow = sum(t.get("points", 0) for t in mod["tasks"] if not t.get("optional"))
+        print(C.dim(f"  {mod.get('environment','-')} · {obow} pkt obowiązkowych"))
+        print()
+
+        # Najpierw liczymy wszystko, dopiero potem rysujemy — dzięki temu
+        # wiadomo, które zadanie jest „bieżące", i tylko jemu rozwijamy szczegóły.
+        wyniki = []
+        for t in mod["tasks"]:
+            if wybrane and t["id"] != wybrane:
+                continue
+            if jest_quizem(t):
+                zdane, problemy = sprawdz_zadanie(ctx, t, env, num)
+                ile_pytan = len(t["quiz"].get("pytania") or [])
+                wyniki.append({"t": t, "zielone": ile_pytan if zdane else 0,
+                               "wszystkie": ile_pytan, "jednostka": "pytań",
+                               "problemy": [] if zdane else problemy, "zdane": zdane})
+                continue
+            problemy = []
+            zielone = 0
+            checki = t.get("checks", [])
+            for c in checki:
+                ok, why = run_check(ctx, c, env)
+                if ok:
+                    zielone += 1
+                else:
+                    problemy.append((c.get("name", "check"), why))
+            wyniki.append({"t": t, "zielone": zielone, "wszystkie": len(checki),
+                           "jednostka": "checków",
+                           "problemy": problemy, "zdane": bool(checki) and not problemy})
+
+        pierwszy_niezdany = next((i for i, w in enumerate(wyniki) if not w["zdane"]), None)
+
+        zdobyte = total = 0
+        done = []
+        for i, w in enumerate(wyniki):
+            t, pts = w["t"], w["t"].get("points", 0)
+            if not t.get("optional"):
+                total += pts
+                zdobyte += pts if w["zdane"] else 0
+            if w["zdane"]:
+                done.append(t["id"])
+
+            if w["zdane"]:
+                glif, barwa = C.green(ZROBIONE), C.dim
+            elif i == pierwszy_niezdany:
+                glif, barwa = C.yellow(TERAZ), lambda x: x
+            else:
+                glif, barwa = C.dim(CZEKA), C.dim
+
+            nr = t["id"].replace("task-", "")
+            punkty = "dodatkowe" if t.get("optional") else f"{pts if w['zdane'] else 0}/{pts}"
+            print("  " + glif + " "
+                  + kolumna(f"zadanie {nr}", 11, barwa)
+                  + kolumna(tytul_zadania(t)[:42], 44, barwa)
+                  + kolumna(f"{w['zielone']}/{w['wszystkie']} {w.get('jednostka', 'checków')}", 14, C.dim)
+                  + C.dim(punkty))
+
+            # Szczegóły tylko dla bieżącego zadania — albo wszystkich przy -v.
+            if w["problemy"] and (i == pierwszy_niezdany or args.verbose) and not args.quiet:
+                widziane = set()
+                for nazwa, why in w["problemy"]:
+                    print(f"      {C.red('✗')} {nazwa}")
+                    for komunikat in why:
+                        ludzki = po_ludzku(komunikat)
+                        if ludzki in widziane:        # ten sam powód potrafi
+                            continue                   # wracać w kilku asercjach
+                        widziane.add(ludzki)
+                        print(f"        {C.dim(ludzki)}")
+                print()
+
+        st = load_state()
+        st.setdefault(num, {})["done"] = sorted(set(st.get(num, {}).get("done", [])) | set(done))
+        save_state(st)
+
+        print()
+        print(f"  {pasek(zdobyte, total)}  {C.bold(f'{zdobyte}/{total} pkt')}")
+        print()
+        if zdobyte < total:
+            dalej = f"labctl next {num}"
+            if pierwszy_niezdany is not None:
+                dalej += f"   ·   labctl check {num} --hint"
+            print(C.dim(f"  dalej:  {dalej}"))
+            if not args.verbose and any(not w["zdane"] for w in wyniki[1:]):
+                print(C.dim(f"          labctl check {num} -v  — szczegóły wszystkich zadań"))
+        else:
+            print(C.green("  moduł zaliczony. ") + C.dim(f"Posprzątaj: labctl cleanup {num}"))
+        print()
+
+        if not args.watch:
+            if getattr(args, "hint", False) and zdobyte < total:
+                cmd_hint(argparse.Namespace(module=args.module, task=args.task))
+            return 0 if zdobyte == total else 1
+        time.sleep(parse_timeout(args.watch))
+
+# ── zadania quizowe ───────────────────────────────────────────────────────
+# Pytanie wielokrotnego wyboru, w którym poprawna odpowiedź jest WYLICZANA
+# z klastra, a nie wpisana w plik. Dzięki temu nie zdezaktualizuje się przy
+# losowym sufiksie Poda ani przy zmianie wersji obrazu — a kursant musi
+# uruchomić konkretne polecenie, żeby wiedzieć, którą literę wybrać.
+
+def jest_quizem(t: dict) -> bool:
+    return bool(t.get("quiz"))
+
+
+def wartosci_z_polecenia(skrypt: str, env: dict, limit: int = 30) -> list[str]:
+    """Uruchamia polecenie i zwraca jego wyjście rozbite na wartości."""
+    try:
+        r = subprocess.run(["bash", "-c", skrypt], capture_output=True, text=True,
+                           timeout=limit, env=env, cwd=ROOT)
+    except subprocess.TimeoutExpired:
+        return []
+    return [w for w in r.stdout.split() if w]
+
+
+def ulóż_odpowiedzi(pytanie: dict, env: dict) -> tuple[str | None, list[str]]:
+    """Zwraca (poprawna, lista wariantów w losowej kolejności).
+
+    Poprawną bierzemy z klastra. Dystraktory mogą być literalne (`mylne`)
+    albo też wyliczone (`mylne_z`) — np. nazwy innych Podów, żeby warianty
+    wyglądały wiarygodnie, a nie jak oczywiste atrapy.
+    """
+    import random
+    poprawne = wartosci_z_polecenia(pytanie["odpowiedz"]["script"], env)
+    if not poprawne:
+        return None, []
+    poprawna = poprawne[0]
+
+    warianty = [w for w in (pytanie.get("mylne") or []) if w != poprawna]
+    if pytanie.get("mylne_z"):
+        for w in wartosci_z_polecenia(pytanie["mylne_z"]["script"], env):
+            if w != poprawna and w not in warianty:
+                warianty.append(w)
+
+    random.shuffle(warianty)
+    wszystkie = [poprawna] + warianty[:3]
+    random.shuffle(wszystkie)
+    return poprawna, wszystkie
+
+
+def quiz_zaliczony(num: str, t: dict) -> bool:
+    return bool(load_state().get(num, {}).get("quiz", {}).get(t["id"]))
+
+
+def zapisz_quiz(num: str, t: dict) -> None:
+    st = load_state()
+    st.setdefault(num, {}).setdefault("quiz", {})[t["id"]] = True
+    zrobione = set(st[num].get("done", [])) | {t["id"]}
+    st[num]["done"] = sorted(zrobione)
+    save_state(st)
+
+
+def przygotuj_zadanie(t: dict, env: dict, opis: str = "przygotowuję zadanie…") -> None:
+    """Uruchamia krok `przygotuj` zadania, jeśli je ma.
+
+    Dotyczy zarówno quizów (tworzą obiekty, o które pytają), jak i zadań
+    naprawczych (psują coś, co kursant ma naprawić). Krok musi być
+    idempotentny — wraca się do niego po każdym wejściu w niezaliczone zadanie.
+    """
+    krok = t.get("przygotuj") or (t.get("quiz") or {}).get("przygotuj")
+    if not krok:
+        return
+    print(C.dim(f"  {opis}"), end="\r")
+    subprocess.run(["bash", "-c", krok["script"]], capture_output=True, text=True,
+                   env=env, cwd=ROOT, timeout=parse_timeout(krok.get("timeout", "3m")))
+    print(" " * 60, end="\r")
+
+
+def przeprowadz_quiz(num: str, t: dict, env: dict) -> bool:
+    """Zadaje pytania jedno po drugim. Zwraca True, gdy wszystkie trafione."""
+    quiz = t["quiz"]
+    przygotuj_zadanie(t, env, "przygotowuję obiekty do pytań…")
+
+    pytania = quiz.get("pytania") or []
+    for nr, pytanie in enumerate(pytania, 1):
+        poprawna, warianty = ulóż_odpowiedzi(pytanie, env)
+        if poprawna is None:
+            print(C.red("  nie udało się ustalić odpowiedzi — czy obiekty istnieją?"))
+            return False
+
+        print()
+        print(C.bold(f"  Pytanie {nr} z {len(pytania)}"))
+        print(md_na_terminal(pytanie["pytanie"]))
+        print()
+        litery = "abcd"
+        for i, w in enumerate(warianty):
+            print(f"    {C.bold(litery[i] + ')')} {w}")
+        print()
+
+        while True:
+            print("  " + C.dim(" · ").join([
+                C.bold("a–" + litery[len(warianty) - 1]) + C.dim(" odpowiedz"),
+                C.bold("?") + C.dim(" podpowiedź"),
+                C.bold("q") + C.dim(" wyjdź"),
+            ]))
+            try:
+                odp = input("  > ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return False
+            if odp == "q":
+                return False
+            if odp == "?":
+                wsk = pytanie.get("wskazowka")
+                print(C.dim(f"\n    {wsk}\n") if wsk else C.dim("\n    brak podpowiedzi\n"))
+                continue
+            if odp not in litery[:len(warianty)]:
+                print(C.dim("  wpisz literę odpowiedzi\n"))
+                continue
+
+            wybrane = warianty[litery.index(odp)]
+            if wybrane == poprawna:
+                print(C.green("  ✓ dobrze"))
+                print()
+                break
+            print(C.red(f"  ✗ nie — poprawna odpowiedź to: {poprawna}"))
+            if pytanie.get("wskazowka"):
+                print(C.dim(f"    sprawdzisz to tak: {pytanie['wskazowka']}"))
+            print(C.dim("    spróbuj jeszcze raz, żeby to utrwalić"))
+            print()
+    return True
+
+
+def sprawdz_zadanie(ctx: str, t: dict, env: dict, num: str | None = None) -> tuple[bool, list]:
+    """Uruchamia checki jednego zadania. Zwraca (zdane, lista problemów).
+
+    Zadania quizowe są wyjątkiem: odpowiedzi padają w sesji, więc ich stan
+    czytamy z zapisanego postępu, a nie ze stanu klastra.
+    """
+    if jest_quizem(t):
+        if num and quiz_zaliczony(num, t):
+            return True, []
+        return False, [("pytania bez odpowiedzi", ["uruchom `labctl lab <moduł>`, żeby odpowiedzieć"])]
+
+    problemy = []
+    for c in t.get("checks", []):
+        ok, why = run_check(ctx, c, env)
+        if not ok:
+            widziane, powody = set(), []
+            for komunikat in why:
+                ludzki = po_ludzku(komunikat)
+                if ludzki not in widziane:
+                    widziane.add(ludzki)
+                    powody.append(ludzki)
+            problemy.append((c.get("name", "check"), powody))
+    return (bool(t.get("checks")) and not problemy), problemy
+
+
+def sesja(mod: dict, katalog: Path, args) -> int:
+    """Prowadzi kursanta przez moduł zadanie po zadaniu.
+
+    Zamiast wypisywać całą treść naraz i kazać uruchamiać osobne polecenia,
+    pokazujemy jedno zadanie, czekamy na Enter i od razu mówimy, co jest nie tak.
+    Zaliczone zadanie przesuwa nas dalej samo.
+    """
+    num = str(mod["module"])
+    ctx = env_for(mod)["context"]
+    env = run_env(mod)
+    zadania = mod.get("tasks") or []
+
+    rozdz = f" · rozdział {mod['chapter']}" if mod.get("chapter") else ""
+    print()
+    print(C.bold(f"  Moduł {num}{rozdz} — {mod['title'].split(' — ')[0]}"))
+    obow = sum(t.get("points", 0) for t in zadania if not t.get("optional"))
+    dod = sum(t.get("points", 0) for t in zadania if t.get("optional"))
+    print(C.dim(f"  {obow} pkt obowiązkowych"
+                + (f" + {dod} dodatkowych" if dod else "")))
+    print()
+
+    # ── środowisko ──────────────────────────────────────────────────────────
+    ODPOWIEDZI.mkdir(parents=True, exist_ok=True)
+    print(C.bold("  Przygotowanie"))
+    if not zapewnij_srodowisko(mod, pomin=getattr(args, "no_env", False)):
+        return 2
+    print(C.dim(f"    środowisko {env_for(mod)['alias']} gotowe"))
+    if mod.get("setup"):
+        print(C.dim("    moduł wymaga przygotowania (labctl setup) — uruchamiam"))
+        run_phase(num, "setup", "Przygotowuję moduł")
+    print()
+
+    if mod.get("intro"):
+        print(md_na_terminal(mod["intro"]))
+        print()
+
+    # ── wznawiamy od pierwszego niezaliczonego ──────────────────────────────
+    i = 0
+    while i < len(zadania):
+        zdane, _ = sprawdz_zadanie(ctx, zadania[i], env, num)
+        if not zdane:
+            break
+        i += 1
+    if i > 0 and i < len(zadania):
+        print(C.dim(f"  (zadania 1–{i} masz już zaliczone — wznawiam od {i + 1})"))
+        print()
+
+    pominiete = set()
+    while i < len(zadania):
+        t = zadania[i]
+        nr, ile = i + 1, len(zadania)
+        pts = t.get("points", 0)
+        etykieta = f"{pts} pkt" + (" · dodatkowe" if t.get("optional") else "")
+
+        print(C.dim("  " + "─" * 62))
+        print(C.bold(f"  Zadanie {nr} z {ile}") + C.dim(f"  ·  {etykieta}"))
+        print()
+        print(md_na_terminal(t.get("description", "")))
+        print()
+
+        if t.get("przygotuj") and not jest_quizem(t):
+            przygotuj_zadanie(t, env, t["przygotuj"].get("opis", "przygotowuję zadanie…"))
+
+        if jest_quizem(t):
+            if przeprowadz_quiz(num, t, env):
+                zapisz_quiz(num, t)
+                print(C.green(f"  ✓ zaliczone — {pts} pkt"))
+                print()
+            else:
+                print(C.dim("  przerwane — postęp zapisany\n"))
+                return 0
+            i += 1
+            continue
+
+        while True:
+            podpowiedzi = t.get("hints") or []
+            st = load_state()
+            uzyte = st.setdefault(num, {}).setdefault("hints", {}).get(t["id"], 0)
+            klawisze = [C.bold("Enter") + C.dim(" sprawdź")]
+            if uzyte < len(podpowiedzi):
+                klawisze.append(C.bold("h") + C.dim(f" podpowiedź {uzyte + 1}/{len(podpowiedzi)}"))
+            else:
+                klawisze.append(C.bold("r") + C.dim(" rozwiązanie"))
+            klawisze += [C.bold("s") + C.dim(" pomiń"), C.bold("q") + C.dim(" wyjdź")]
+            print("  " + C.dim(" · ").join(klawisze))
+            try:
+                odp = input("  > ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 130
+
+            if odp in ("q", "quit", "wyjdz"):
+                print(C.dim("\n  do zobaczenia — postęp zapisany\n"))
+                return 0
+            if odp in ("s", "skip", "pomin"):
+                pominiete.add(t["id"])
+                print(C.dim("  pominięte\n"))
+                i += 1
+                break
+            if odp == "h":
+                if uzyte < len(podpowiedzi):
+                    print()
+                    print(C.yellow(f"  Podpowiedź {uzyte + 1} z {len(podpowiedzi)}"))
+                    print(md_na_terminal(podpowiedzi[uzyte], "    "))
+                    print()
+                    st[num]["hints"][t["id"]] = uzyte + 1
+                    save_state(st)
+                else:
+                    print(C.dim("  podpowiedzi się skończyły — naciśnij r po rozwiązanie\n"))
+                continue
+            if odp == "r":
+                print()
+                print(C.yellow("  Rozwiązanie referencyjne"))
+                print(md_na_terminal(t.get("solution") or "(brak)", "    "))
+                print()
+                continue
+            if odp not in ("", "c", "check", "sprawdz"):
+                print(C.dim("  nie znam takiej opcji\n"))
+                continue
+
+            # ── sprawdzenie ─────────────────────────────────────────────────
+            print(C.dim("  sprawdzam…"), end="\r")
+            zdane, problemy = sprawdz_zadanie(ctx, t, env, num)
+            print(" " * 20, end="\r")
+            if zdane:
+                st = load_state()
+                zrobione = set(st.setdefault(num, {}).get("done", [])) | {t["id"]}
+                st[num]["done"] = sorted(zrobione)
+                save_state(st)
+                print(C.green(f"  ✓ zaliczone — {pts} pkt"))
+                print()
+                i += 1
+                break
+            print(C.red(f"  ✗ jeszcze nie ({len(t.get('checks', [])) - len(problemy)}"
+                        f"/{len(t.get('checks', []))} checków przechodzi)"))
+            for nazwa, powody in problemy:
+                print(f"      {C.red('·')} {nazwa}")
+                for powod in powody:
+                    print(f"        {C.dim(powod)}")
+            print()
+
+    # ── podsumowanie ────────────────────────────────────────────────────────
+    zdobyte = total = 0
+    for t in zadania:
+        zdane, _ = sprawdz_zadanie(ctx, t, env, num)
+        if not t.get("optional"):
+            total += t.get("points", 0)
+            zdobyte += t.get("points", 0) if zdane else 0
+    print(C.dim("  " + "─" * 62))
+    print(f"  {pasek(zdobyte, total)}  {C.bold(f'{zdobyte}/{total} pkt')}")
+    print()
+    if pominiete:
+        print(C.dim(f"  pominięte zadania: {', '.join(sorted(pominiete))}"
+                    f" — wróć do nich przez `labctl lab {num}`"))
+    if zdobyte == total:
+        print(C.green("  Moduł zaliczony."))
+        print()
+        # Sprzątamy od razu, zamiast liczyć, że kursant o tym pamięta —
+        # to jedyny powód, dla którego klaster mógłby się zaśmiecić.
+        if sys.stdin.isatty():
+            try:
+                odp = input("  Posprzątać po module? [T/n] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                odp = "n"
+            if odp in ("", "t", "tak", "y", "yes"):
+                run_phase(num, "cleanup", "Sprzątam po module")
+            else:
+                print(C.dim(f"  zostawiam — gdy zechcesz: labctl cleanup {num}"))
+        else:
+            print(C.dim(f"  Sprzątanie po module: labctl cleanup {num}"))
+    else:
+        print(C.dim(f"  Sprzątanie po module: labctl cleanup {num}"))
+    print()
+    return 0 if zdobyte == total else 1
+
+
+def cmd_lab(args) -> int:
+    mod, d = load_module(args.module)
+    # Sesja prowadzona wymaga terminala. W potoku albo w CI wypisujemy
+    # materiał w całości — tak samo zachowuje się flaga --tekst.
+    if getattr(args, "tekst", False) or not sys.stdin.isatty():
+        print((d / "lab.md").read_text(encoding="utf-8"))
+        e = env_for(mod)
+        if not srodowisko_stoi(e):
+            print(C.dim(f"  (środowisko „{e['alias']}” nie stoi — "
+                        f"`labctl lab {mod['module']}` w terminalu postawi je samo)\n"))
+        return 0
+    return sesja(mod, d, args)
+
+def cmd_next(args) -> int:
+    mod, _ = load_module(args.module)
+    if not zapewnij_srodowisko(mod, pomin=getattr(args, "no_env", False)):
+        return 2
+    if not cluster_reachable(mod):
+        return 2
+    ctx, env = env_for(mod)["context"], run_env(mod)
+    for t in mod["tasks"]:
+        passed = all(run_check(ctx, c, env)[0] for c in t.get("checks", []))
+        if passed:
+            continue
+        print()
+        print(C.bold(f"Moduł {mod['module']} · {t['id'].replace('task-', 'zadanie ')}"
+                     f" · {t.get('points', 0)} pkt"
+                     + (" (dodatkowe)" if t.get("optional") else "")))
+        print()
+        print(t["description"].rstrip())
+        print(C.dim(f"\nsprawdź: labctl check {mod['module']} --task {t['id']}"))
+        return 0
+    print(C.green(f"\nWszystkie zadania modułu {mod['module']} zaliczone.\n"))
+    return 0
+
+def cmd_hint(args) -> int:
+    mod, _ = load_module(args.module)
+    wybrane = id_zadania(mod, getattr(args, "task", None))
+    if not zapewnij_srodowisko(mod, pomin=getattr(args, "no_env", False)):
+        return 2
+    if not cluster_reachable(mod):
+        return 2
+    ctx, env = env_for(mod)["context"], run_env(mod)
+    num = str(mod["module"])
+    st = load_state()
+    used = st.setdefault(num, {}).setdefault("hints", {})
+
+    for t in mod["tasks"]:
+        if wybrane and t["id"] != wybrane:
+            continue
+        if all(run_check(ctx, c, env)[0] for c in t.get("checks", [])):
+            continue
+        hints = t.get("hints", [])
+        if not hints:
+            print(C.dim(f"{t['id']} nie ma podpowiedzi."))
+            return 0
+        i = used.get(t["id"], 0)
+        if i >= len(hints):
+            print(C.yellow(f"\nPodpowiedzi do {t['id']} się skończyły "
+                           f"({len(hints)}/{len(hints)}). "
+                           f"Rozwiązanie: labctl solution {num} --task {t['id']}\n"))
+            return 0
+        print()
+        print(C.bold(f"{t['id'].replace('task-', 'zadanie ')} · podpowiedź {i+1}/{len(hints)}"))
+        print()
+        print(hints[i].rstrip())
+        print()
+        used[t["id"]] = i + 1
+        save_state(st)
+        return 0
+    print(C.green(f"\nNic do podpowiadania — moduł {num} zaliczony.\n"))
+    return 0
+
+def cmd_solution(args) -> int:
+    mod, _ = load_module(args.module)
+    wybrane = id_zadania(mod, getattr(args, "task", None))
+    for t in mod["tasks"]:
+        if wybrane and t["id"] != wybrane:
+            continue
+        print()
+        print(C.bold(f"{t['id'].replace('task-', 'zadanie ')} — rozwiązanie referencyjne"))
+        print()
+        print((t.get("solution") or "(brak)").rstrip())
+    return 0
+
+def cmd_setup(args) -> int:
+    mod, _ = load_module(args.module)
+    if not zapewnij_srodowisko(mod, pomin=getattr(args, "no_env", False)):
+        return 2
+    return run_phase(args.module, "setup", "Przygotowuję moduł")
+
+def cmd_cleanup(args) -> int:
+    # Odwrotnie niż przy setupie: jeśli środowiska nie ma, to nie ma też
+    # czego sprzątać — stawianie klastra po to, żeby usunąć z niego namespace,
+    # byłoby absurdem.
+    mod, _ = load_module(args.module)
+    if not srodowisko_stoi(env_for(mod)):
+        print(C.dim(f"\n  środowisko modułu {mod['module']} nie stoi — nie ma czego sprzątać\n"))
+        return 0
+    return run_phase(args.module, "cleanup", "Sprzątam po module")
+
+def run_phase(num: str, phase: str, label: str) -> int:
+    mod, _ = load_module(num)
+    steps = mod.get(phase)
+    if not steps:
+        print(C.dim(f"moduł {mod['module']} nie ma fazy '{phase}'"))
+        return 0
+    env = run_env(mod)
+    print()
+    print(C.bold(f"{label} {mod['module']}"))
+    rc_all = 0
+    for s in steps:
+        print(f"\n  {C.blue('→')} {s['name']}")
+        p = subprocess.run(["bash", "-c", s["script"]], env=env, cwd=ROOT,
+                           timeout=parse_timeout(s.get("timeout", "5m")))
+        if p.returncode != 0:
+            if s.get("ignoreError"):
+                print(C.dim("    (krok zgłosił błąd — pomijam, tak przewiduje definicja)"))
+            else:
+                print(C.red(f"    krok nieudany (kod {p.returncode})"))
+                rc_all = 1
+    print()
+    return rc_all
+
+# ── środowiska ────────────────────────────────────────────────────────────────
+
+def kind_clusters() -> list[str]:
+    if not shutil.which("kind"):
+        return []
+    p = subprocess.run(["kind", "get", "clusters"], capture_output=True, text=True)
+    return [l.strip() for l in p.stdout.splitlines() if l.strip()]
+
+def env_reset(name: str, e: dict) -> int:
+    """Usuwa i stawia środowisko od nowa.
+
+    Sprzątanie po modułach przywraca klaster do stanu wyjściowego, więc
+    normalnie nie jest to potrzebne. Przydaje się, gdy ktoś namieszał
+    poza labem albo chce zacząć od czystej kartki.
+    """
+    print()
+    print(C.bold(f"Odtwarzam środowisko {name} od zera"))
+    env_down(name, e)
+    return env_up(name, e)
+
+
+def cmd_env(args) -> int:
+    if args.action == "list":
+        print()
+        stoi = kind_clusters()
+        for name, e in ENVS.items():
+            if e["driver"] == "kind":
+                up = e["cluster"] in stoi
+            else:
+                # Katalog .vagrant zostaje po `destroy`; dowodem istnienia
+                # maszyny jest plik z jej identyfikatorem u providera.
+                up = any((ROOT / e["dir"] / ".vagrant" / "machines").glob("*/*/id"))
+            print(f"  {C.green(OK) if up else C.dim('·')} {name:<16} "
+                  f"{C.dim('(' + e['alias'] + ')'):<12} {e['opis']}")
+        print()
+        return 0
+
+    name = ALIASES.get(args.name, args.name)
+    if name not in ENVS:
+        die(f"nieznane środowisko '{args.name}'; użyj: " + ", ".join(ALIASES))
+    e = ENVS[name]
+    return {"up": env_up, "down": env_down, "reset": env_reset}[args.action](name, e)
+
+def zajete_porty(config: pathlib.Path) -> list[tuple[int, str]]:
+    """Porty hosta wymagane przez klaster, które ktoś już trzyma.
+
+    Kind przerywa tworzenie klastra dopiero przy uruchamianiu kontenera
+    i zostawia po sobie komunikat Dockera o „address already in use".
+    Taniej sprawdzić to przed startem i powiedzieć wprost, co blokuje.
+    """
+    import socket
+    porty = [int(m) for m in re.findall(r"hostPort:\s*(\d+)", config.read_text(encoding="utf-8"))]
+    zajete = []
+    for port in porty:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as gniazdo:
+            gniazdo.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                gniazdo.bind(("0.0.0.0", port))
+            except OSError:
+                kto = ""
+                r = subprocess.run(["ss", "-ltnp", f"sport = :{port}"],
+                                   capture_output=True, text=True)
+                m = re.search(r'users:\(\("([^"]+)",pid=(\d+)', r.stdout)
+                if m:
+                    kto = f"{m.group(1)} (pid {m.group(2)})"
+                zajete.append((port, kto))
+    return zajete
+
+
+def poczekaj_az_klaster_dojrzeje(e: dict) -> None:
+    """Czeka, aż wszystkie węzły się zarejestrują i przejdą w Ready.
+
+    `kind create cluster` oddaje sterowanie, zanim dołączą węzły dodatkowe —
+    przy klastrze HA potrafi wrócić z dwoma węzłami w stanie NotReady.
+    Bez tego kroku check uruchomiony zaraz po automatycznym postawieniu
+    środowiska widzi klaster w połowie drogi i świeci na czerwono
+    z powodów niezwiązanych z pracą kursanta.
+    """
+    oczekiwane = len(re.findall(r"^\s*-\s*role:", (ROOT / e["config"]).read_text(encoding="utf-8"), re.M))
+    print(f"  {C.blue('→')} czekam, aż {oczekiwane} węzły będą gotowe")
+    for _ in range(60):
+        rc, out, _ = kubectl(e["context"], ["get", "nodes", "--no-headers"], timeout=20)
+        if rc == 0 and len(out.splitlines()) >= oczekiwane:
+            break
+        time.sleep(5)
+    kubectl(e["context"], ["wait", "--for=condition=Ready", "nodes", "--all",
+                           "--timeout=300s"], timeout=320)
+    _, stan, _ = kubectl(e["context"], ["get", "nodes", "--no-headers"], timeout=20)
+    gotowe = sum(1 for l in stan.splitlines() if " Ready " in f" {l} ".replace("\t", " "))
+    print(C.dim(f"    gotowych węzłów: {gotowe}/{oczekiwane}"))
+
+
+def env_up(name: str, e: dict) -> int:
+    print()
+    print(C.bold(f"Stawiam środowisko {name}"))
+    if e["driver"] == "vagrant":
+        if not shutil.which("vagrant"):
+            die("brak vagranta — zobacz labctl doctor")
+        return subprocess.run(["vagrant", "up"], cwd=ROOT / e["dir"]).returncode
+
+    if not shutil.which("kind"):
+        die("brak kinda — zobacz labctl doctor")
+    if e["cluster"] in kind_clusters():
+        print(C.dim(f"  klaster {e['cluster']} już stoi — pomijam tworzenie"))
+    else:
+        zajete = zajete_porty(ROOT / e["config"])
+        if zajete:
+            print()
+            print(C.red("  Porty wymagane przez klaster są zajęte:"))
+            for port, kto in zajete:
+                if kto:
+                    print(f"    {port}  {C.dim(kto)}")
+                else:
+                    print(f"    {port}  {C.dim('sprawdź czym: ss -ltnp ' + chr(39) + 'sport = :' + str(port) + chr(39))}")
+            print()
+            print(C.dim("  Zwolnij je i spróbuj ponownie. Najczęstszy winowajca to podgląd"))
+            print(C.dim("  slajdów — od tej wersji stoi na 8099, ale starsza sesja `make watch`"))
+            print(C.dim("  mogła zająć 8080; zatrzymaj ją Ctrl+C."))
+            print()
+            return 1
+        rc = subprocess.run(["kind", "create", "cluster", "--config",
+                             str(ROOT / e["config"])]).returncode
+        if rc != 0:
+            return rc
+        poczekaj_az_klaster_dojrzeje(e)
+    if e.get("addons"):
+        env = os.environ.copy()
+        env["KUBECONTEXT"] = e["context"]
+        rc = subprocess.run(["bash", str(ROOT / e["addons"])], env=env, cwd=ROOT).returncode
+        if rc != 0:
+            return rc
+    if e.get("loadbalancer"):
+        start_loadbalancer()
+    print()
+    print(C.green(f"  gotowe — kontekst {e['context']}"))
+    print(C.dim(f"  kubectl config use-context {e['context']}"))
+    print()
+    return 0
+
+def start_loadbalancer() -> None:
+    """cloud-provider-kind: Service typu LoadBalancer i Gateway API w kindzie."""
+    cli, stan = engine()
+    if stan != "ok":
+        print(C.yellow("  silnik kontenerów nie odpowiada — pomijam cloud-provider-kind"))
+        return
+    p = subprocess.run([cli, "ps", "-a", "--filter", f"name=^{CPK_NAME}$",
+                        "--format", "{{.Names}} {{.State}}"], capture_output=True, text=True)
+    line = p.stdout.strip()
+    if line.startswith(CPK_NAME):
+        if "running" in line:
+            print(C.dim(f"  {CPK_NAME} już działa"))
+            return
+        subprocess.run([cli, "rm", "-f", CPK_NAME], capture_output=True)
+    print(f"  {C.blue('→')} startuję {CPK_NAME} (LoadBalancer + Gateway API)")
+    rc = subprocess.run([cli, "run", "-d", "--name", CPK_NAME,
+                         "--restart", "unless-stopped", "--network", "kind",
+                         "-v", "/var/run/docker.sock:/var/run/docker.sock",
+                         CPK_IMAGE], capture_output=True, text=True)
+    if rc.returncode != 0:
+        print(C.yellow("    nie udało się — Service typu LoadBalancer zostanie w <pending>"))
+        print(C.dim(f"    {rc.stderr.strip()[:200]}"))
+
+def env_down(name: str, e: dict) -> int:
+    print()
+    if e["driver"] == "vagrant":
+        return subprocess.run(["vagrant", "destroy", "-f"], cwd=ROOT / e["dir"]).returncode
+    rc = subprocess.run(["kind", "delete", "cluster", "--name", e["cluster"]]).returncode
+    if e.get("loadbalancer") and not kind_clusters():
+        cli, stan = engine()
+        if stan == "ok":
+            subprocess.run([cli, "rm", "-f", CPK_NAME], capture_output=True)
+        print(C.dim(f"  zatrzymałem {CPK_NAME} — nie ma już żadnego klastra kind"))
+    return rc
+
+# ── doctor ────────────────────────────────────────────────────────────────────
+
+NARZEDZIA = [
+    ("kubectl", "rozmowa z API klastra", True),
+    ("kind",    "klaster w kontenerach", True),
+    ("helm",    "moduł 07", True),
+    ("jq",      "czytanie JSON-a w kilku labach", True),
+    ("openssl", "certyfikat w module 10", True),
+    ("vagrant", "moduł 02 (maszyny wirtualne)", False),
+    ("VBoxManage", "moduł 02 (VirtualBox)", False),
+]
+
+VERSION_FLAGS = {
+    "kubectl":    [["version", "--client=true", "-o", "yaml"]],
+    "kind":       [["--version"]],
+    "helm":       [["version", "--short"]],
+    "jq":         [["--version"]],
+    "openssl":    [["version"]],
+    "vagrant":    [["--version"]],
+    "VBoxManage": [["--version"]],
+}
+
+def cmd_doctor(args) -> int:
+    print()
+    print(C.bold("Stanowisko"))
+    print()
+    cli, stan = engine()
+    opisy = {
+        "ok":     lambda: f"{cli} — działa",
+        "grupa":  lambda: f"{cli} — demon działa, ale ta sesja nie ma grupy `docker`",
+        "demon":  lambda: f"{cli} — zainstalowany, demon nie odpowiada",
+        "brak":   lambda: "brak docker/nerdctl/podman",
+    }
+    znak = C.green(OK) if stan == "ok" else (C.yellow("·") if stan == "grupa" else C.red(BAD))
+    print(f"  {znak} {'silnik kontenerów':<12} {C.dim(opisy[stan]())}")
+    if stan == "grupa":
+        print(C.yellow("      przeloguj się albo zacznij nową sesję: "
+                       "`newgrp docker`"))
+    elif stan == "brak":
+        print(C.dim("      sudo apt-get install -y docker.io && "
+                    "sudo usermod -aG docker \"$USER\""))
+
+    braki = [] if stan == "ok" else (["silnik kontenerów"] if stan != "grupa" else [])
+    for tool, why, wymagane in NARZEDZIA:
+        p = shutil.which(tool)
+        mark = C.green(OK) if p else (C.red(BAD) if wymagane else C.yellow("·"))
+        ver = ""
+        if p:
+            for flag in VERSION_FLAGS.get(tool, [["--version"], ["version"]]):
+                r = subprocess.run([tool, *flag], capture_output=True, text=True)
+                if r.returncode == 0 and r.stdout.strip():
+                    out = r.stdout.strip()
+                    m = re.search(r"gitVersion:\s*(\S+)", out)
+                    ver = (m.group(1) if m else out.splitlines()[0])[:52]
+                    break
+        print(f"  {mark} {tool:<12} {C.dim(ver or why)}")
+        if not p and wymagane:
+            braki.append(tool)
+
+    if shutil.which("kubectl"):
+        r = subprocess.run(["kubectl", "version", "-o", "json"], capture_output=True, text=True)
+        try:
+            v = json.loads(r.stdout)["clientVersion"]
+            minor = int(v["minor"].rstrip("+"))
+            if minor < 30:
+                print()
+                print(C.yellow(f"  uwaga: kubectl {v['gitVersion']} jest starszy niż klaster "
+                               f"szkoleniowy (v1.37) — poza wspieranym oknem ±1 wersji"))
+        except Exception:
+            pass
+
+    if shutil.which("kind"):
+        r = subprocess.run(["kind", "--version"], capture_output=True, text=True)
+        m = re.search(r"(\d+)\.(\d+)\.(\d+)", r.stdout)
+        if m and (int(m.group(1)), int(m.group(2))) < (0, 26):
+            print()
+            print(C.yellow("  uwaga: kind < 0.26 — kindnet nie wymusza wtedy NetworkPolicy, "
+                           "a tego wymagają moduły 14 i 99"))
+
+    print()
+    print(C.bold("Środowiska"))
+    cmd_env(argparse.Namespace(action="list", name=None))
+    if braki:
+        print(C.red(f"  brakuje: {', '.join(braki)}"))
+        print()
+        return 1
+    return 0
+
+def cmd_validate(args) -> int:
+    """Sprawdza same materiały — bez klastra. Przydaje się w CI."""
+    print()
+    ile_mod = ile_chk = ile_pyt = 0
+    bledy = []
+    for d in sorted(LABS.iterdir()):
+        if not d.is_dir():
+            continue
+        f = d / "checks.yaml"
+        if not f.exists():
+            bledy.append(f"{d.name}: brak checks.yaml")
+            continue
+        try:
+            mod = yaml.safe_load(f.read_text(encoding="utf-8"))
+        except yaml.YAMLError as e:
+            bledy.append(f"{d.name}: nie parsuje się — {e}")
+            continue
+        ile_mod += 1
+        if not (d / "lab.md").exists():
+            bledy.append(f"{d.name}: brak lab.md")
+        # Skrypty mają shebang i materiały każą je uruchamiać wprost ścieżką,
+        # więc bit wykonywalności jest częścią kontraktu, a nie kosmetyką.
+        for sh in sorted((d / "solutions").glob("*.sh")):
+            if not os.access(sh, os.X_OK):
+                bledy.append(f"{d.name}: {sh.name} bez bitu wykonywalności")
+        if mod.get("environment") and mod["environment"] not in ENVS:
+            bledy.append(f"{d.name}: nieznane środowisko {mod['environment']}")
+        oblig = sum(t.get("points", 0) for t in mod.get("tasks") or [] if not t.get("optional"))
+        deklar = re.search(r"(\d+)\s+punkt", (d / "lab.md").read_text(encoding="utf-8")) \
+            if (d / "lab.md").exists() else None
+        if deklar and int(deklar.group(1)) != oblig:
+            bledy.append(f"{d.name}: lab.md mówi {deklar.group(1)} pkt, checks.yaml daje {oblig}")
+        for t in mod.get("tasks") or []:
+            if t.get("quiz"):
+                q = t["quiz"]
+                if not (q.get("pytania") or []):
+                    bledy.append(f"{d.name}/{t['id']}: quiz bez pytań")
+                for nr, pyt in enumerate(q.get("pytania") or [], 1):
+                    if not pyt.get("pytanie"):
+                        bledy.append(f"{d.name}/{t['id']}: pytanie {nr} bez treści")
+                    if not (pyt.get("odpowiedz") or {}).get("script"):
+                        bledy.append(f"{d.name}/{t['id']}: pytanie {nr} bez `odpowiedz.script`")
+                    if not (pyt.get("mylne") or pyt.get("mylne_z")):
+                        bledy.append(f"{d.name}/{t['id']}: pytanie {nr} bez wariantów mylnych")
+                    ile_pyt += 1
+                if t.get("checks"):
+                    bledy.append(f"{d.name}/{t['id']}: zadanie quizowe nie powinno mieć `checks`")
+                continue
+            if not (t.get("checks") or []):
+                bledy.append(f"{d.name}/{t['id']}: zadanie bez `checks` i bez `quiz`")
+            for c in t.get("checks") or []:
+                ile_chk += 1
+                if not ({"resource", "exec", "http"} & set(c)):
+                    bledy.append(f"{d.name}/{t['id']}: check bez resource/exec/http")
+                for a in c.get("assert") or []:
+                    if a.get("op") not in (None, "eq", "matches", "gte", "gt", "lte", "lt",
+                                           "exists", "notExists", "contains", "oneOf"):
+                        bledy.append(f"{d.name}/{t['id']}: nieznany operator {a['op']}")
+                    if "path" not in a:
+                        bledy.append(f"{d.name}/{t['id']}: asercja bez path")
+                    if "op" not in a and "count" not in a:
+                        bledy.append(f"{d.name}/{t['id']}: asercja bez `op` i bez `count`")
+    # Mapowanie na rozdziały sylabusa LFS458: każdy z 1–15 ma mieć dokładnie
+    # jeden lab. Numer modułu ≠ numer rozdziału (Helm to rozdział 7, lab 07).
+    rozdzialy = {}
+    for d in sorted(LABS.iterdir()):
+        f = d / "checks.yaml"
+        if not (d.is_dir() and f.exists()):
+            continue
+        mod = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        ch = mod.get("chapter")
+        if ch is None:
+            continue
+        if ch in rozdzialy:
+            bledy.append(f"rozdział {ch} wskazują dwa moduły: {rozdzialy[ch]} i {d.name}")
+        rozdzialy[ch] = d.name
+        if not mod.get("chapterTitle"):
+            bledy.append(f"{d.name}: chapter bez chapterTitle")
+    brak = [n for n in range(1, 16) if n not in rozdzialy]
+    if brak:
+        bledy.append("rozdziały sylabusa bez laba: " + ", ".join(map(str, brak)))
+
+    print(f"  {ile_mod} modułów, {ile_chk} checków"
+          + (f", {ile_pyt} pytań" if ile_pyt else "")
+          + f", {len(rozdzialy)}/15 rozdziałów sylabusa")
+    for b in bledy:
+        print(f"  {C.red(BAD)} {b}")
+    print()
+    print(C.green("  materiały spójne") if not bledy else C.red(f"  {len(bledy)} problemów"))
+    print()
+    return 1 if bledy else 0
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="labctl", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def with_module(name, fn, task=False, watch=False, env=False):
+        p = sub.add_parser(name)
+        p.add_argument("module")
+        if env:
+            p.add_argument("--no-env", action="store_true",
+                           help="nie stawiaj środowiska automatycznie")
+        if task:
+            p.add_argument("--task", help="tylko to zadanie, np. task-3 albo 3")
+        if watch:
+            p.add_argument("--watch", nargs="?", const="10s", help="sprawdzaj w pętli")
+            p.add_argument("-q", "--quiet", action="store_true", help="bez komunikatów")
+            p.add_argument("--hint", action="store_true",
+                           help="po tabeli pokaż kolejną podpowiedź")
+            p.add_argument("-v", "--verbose", action="store_true",
+                           help="szczegóły wszystkich zadań, nie tylko bieżącego")
+        p.set_defaults(func=fn)
+        return p
+
+    p_lab = with_module("lab", cmd_lab, env=True)
+    p_lab.add_argument("--tekst", action="store_true",
+                       help="wypisz całą treść zamiast prowadzonej sesji")
+    with_module("next", cmd_next, env=True)
+    with_module("check", cmd_check, task=True, watch=True, env=True)
+    with_module("hint", cmd_hint, task=True, env=True)
+    with_module("solution", cmd_solution, task=True)
+    with_module("setup", cmd_setup, env=True)
+    with_module("cleanup", cmd_cleanup)
+
+    pe = sub.add_parser("env")
+    pe.add_argument("action", choices=["up", "down", "list", "reset"])
+    pe.add_argument("name", nargs="?", help="basic | ha | vm")
+    pe.set_defaults(func=cmd_env)
+
+    sub.add_parser("doctor").set_defaults(func=cmd_doctor)
+    sub.add_parser("validate").set_defaults(func=cmd_validate)
+
+    args = ap.parse_args()
+    for opt, domyslnie in (("task", None), ("watch", None),
+                           ("quiet", False), ("hint", False), ("no_env", False),
+                           ("verbose", False), ("tekst", False)):
+        if not hasattr(args, opt):
+            setattr(args, opt, domyslnie)
+    return args.func(args)
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

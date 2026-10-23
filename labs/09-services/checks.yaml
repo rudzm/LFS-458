@@ -1,0 +1,434 @@
+module: "09"
+title: "Services — stabilne adresy i DNS"
+chapter: 9
+chapterTitle: "Services"
+day: 2
+environment: kind-basic
+
+intro: |
+  Połączysz to, co powstało w poprzednich modułach: workload dostanie
+  stabilny adres, nazwę w DNS i drzwi na zewnątrz klastra.
+
+  Node'y klastra Kind to kontenery na mostku dockera, więc Service typu
+  NodePort sprawdzisz z hosta wprost pod adresem node'a — i na każdym z nich
+  osobno (`kubectl get nodes -o wide`).
+
+cleanup:
+  - name: "Usuwam namespace lfs458-m09"
+    timeout: 3m
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m09 --ignore-not-found --wait=true
+  - name: "Usuwam namespace zadania quizowego"
+    timeout: 5m
+    ignoreError: true
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m09-quiz \
+        --ignore-not-found --wait=true
+
+tasks:
+  - id: task-1
+    points: 3
+    description: |
+      **Daj workloadowi stabilny adres.**
+
+      W namespace `lfs458-m09`:
+
+      1. Deployment **`web`** — 3 repliki, obraz `nginx:1.27-alpine`,
+         etykieta Podów `app=web`
+      2. Service **`web`** typu **ClusterIP**, port `80` → `targetPort` `80`,
+         selektor `app=web`
+
+      Sprawdź najważniejszą rzecz: czy Service ma backendy.
+
+      ```bash
+      kubectl get endpointslices -n lfs458-m09 -l kubernetes.io/service-name=web
+      kubectl describe svc web -n lfs458-m09
+      ```
+    hints:
+      - "`kubectl create deployment web --image=nginx:1.27-alpine --replicas=3 -n lfs458-m09` nadaje etykietę `app=web` automatycznie."
+      - "Service najprościej zrobić przez `kubectl expose deployment web --port=80 --target-port=80 -n lfs458-m09`."
+      - "Jeśli `describe svc` pokazuje `Endpoints: <none>`, selektor nie pasuje do etykiet Podów. Porównaj `kubectl get svc web -o jsonpath='{.spec.selector}'` z `kubectl get pods --show-labels`."
+    solution: |
+      ```bash
+      kubectl create namespace lfs458-m09
+      kubectl create deployment web --image=nginx:1.27-alpine --replicas=3 -n lfs458-m09
+      kubectl rollout status deployment/web -n lfs458-m09
+      kubectl expose deployment web --port=80 --target-port=80 -n lfs458-m09
+
+      kubectl get svc,endpointslices -n lfs458-m09
+      ```
+    checks:
+      - name: "Deployment web ma 3 gotowe repliki"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m09
+          name: web
+        assert:
+          - path: "{.status.readyReplicas}"
+            op: eq
+            value: 3
+            message: "poczekaj, aż wszystkie repliki będą Ready"
+      - name: "Service web jest typu ClusterIP i ma właściwe porty"
+        resource:
+          apiVersion: v1
+          kind: Service
+          namespace: lfs458-m09
+          name: web
+        assert:
+          - path: "{.spec.type}"
+            op: eq
+            value: ClusterIP
+          - path: "{.spec.ports[*].port}"
+            op: eq
+            value: 80
+          - path: "{.spec.selector['app']}"
+            op: eq
+            value: web
+            message: "Service wybiera Pody po etykietach — selektor ma wskazywać `app=web`"
+      - name: "Service ma trzy backendy"
+        resource:
+          apiVersion: discovery.k8s.io/v1
+          kind: EndpointSlice
+          namespace: lfs458-m09
+          labelSelector: "kubernetes.io/service-name=web"
+        assert:
+          - path: "{.items[*].endpoints[*].addresses[*]}"
+            count:
+              op: eq
+              value: 3
+            message: "`kubectl get endpointslices -n lfs458-m09` — brak adresów znaczy, że selektor nie pasuje albo Pody nie są Ready"
+
+  - id: task-2
+    points: 4
+    description: |
+      **Otwórz usługę na świat.**
+
+      Utwórz drugi Service, **`web-nodeport`**, typu **NodePort**:
+
+      | Pole | Wartość |
+      |---|---|
+      | `port` | `80` |
+      | `targetPort` | `80` |
+      | `nodePort` | **`30080`** |
+      | selektor | `app=web` |
+
+      Node'y klastra Kind to kontenery na mostku dockera, więc z hosta
+      sięgasz po nie **wprost pod ich adresem** — i możesz sprawdzić każdy:
+
+      ```bash
+      kubectl get nodes -o wide          # kolumna INTERNAL-IP
+      curl -s http://<IP-node-a>:30080 | head -3
+      ```
+
+      > Spróbuj na **wszystkich trzech**, także na tych, na których Poda nie ma.
+      > Odpowiedzą wszystkie — to właśnie znaczy, że NodePort otwiera port
+      > na każdym node'ie.
+    hints:
+      - "`kubectl expose` nie pozwala wskazać konkretnego `nodePort`. Napisz manifest albo wygeneruj go i popraw: `kubectl expose deployment web --name=web-nodeport --type=NodePort --port=80 --dry-run=client -o yaml`."
+      - "Pole `nodePort` znajduje się wewnątrz elementu listy `spec.ports`, obok `port` i `targetPort`."
+      - "Dozwolony zakres to 30000–32767. Jeśli port jest zajęty, API odpowie `provided port is already allocated`."
+      - "Komplet:\n\n```yaml\napiVersion: v1\nkind: Service\nmetadata:\n  name: web-nodeport\n  namespace: lfs458-m09\nspec:\n  type: NodePort\n  selector:\n    app: web\n  ports:\n    - port: 80\n      targetPort: 80\n      nodePort: 30080\n```"
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: web-nodeport
+        namespace: lfs458-m09
+      spec:
+        type: NodePort
+        selector:
+          app: web
+        ports:
+          - port: 80
+            targetPort: 80
+            nodePort: 30080
+      EOF
+
+      for IP in $(kubectl get nodes \
+            -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}'); do
+        echo -n "$IP -> "; curl -s --max-time 5 "http://$IP:30080/" | grep -o '<title>.*</title>'
+      done
+      ```
+    checks:
+      - name: "Service web-nodeport jest typu NodePort na porcie 30080"
+        resource:
+          apiVersion: v1
+          kind: Service
+          namespace: lfs458-m09
+          name: web-nodeport
+        assert:
+          - path: "{.spec.type}"
+            op: eq
+            value: NodePort
+          - path: "{.spec.ports[*].nodePort}"
+            op: eq
+            value: 30080
+            message: "wskaż jawnie nodePort 30080 — tego numeru pilnują sprawdzenia"
+      # Adresy node'ów nadaje docker, więc nie da się ich wpisać na sztywno —
+      # odczytujemy je z API. Przy okazji sprawdzamy to, co głosi wykład:
+      # port odpowiada na KAŻDYM node'ie, nie tylko tam, gdzie stoi Pod.
+      - name: "NodePort odpowiada na wszystkich node'ach"
+        exec:
+          timeout: 120s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            IPS=$($K get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}')
+            ILE=0; OK=0
+            for IP in $IPS; do
+              ILE=$((ILE + 1))
+              for _ in 1 2 3 4 5 6; do
+                if curl -s --max-time 4 "http://$IP:30080/" | grep -qi nginx; then
+                  OK=$((OK + 1)); break
+                fi
+                sleep 3
+              done
+            done
+            if [ "$ILE" -gt 0 ] && [ "$OK" -eq "$ILE" ]; then
+              echo "WYNIK: odpowiada $OK z $ILE node-ow"
+            else
+              echo "WYNIK: odpowiada tylko $OK z $ILE node-ow"
+            fi
+          stdoutMatches: "WYNIK: odpowiada [0-9]+ z"
+
+  - id: task-3
+    points: 4
+    description: |
+      **Dosięgnij usługi po nazwie.**
+
+      Utwórz w `lfs458-m09` Poda **`klient`** (`busybox:1.36`, `sleep 3600`)
+      i z jego wnętrza sprawdź, że Service `web` odpowiada zarówno na nazwę
+      krótką, jak i na pełną:
+
+      ```bash
+      kubectl exec -n lfs458-m09 klient -- wget -qO- http://web
+      kubectl exec -n lfs458-m09 klient -- wget -qO- http://web.lfs458-m09.svc.cluster.local
+      kubectl exec -n lfs458-m09 klient -- cat /etc/resolv.conf
+      ```
+
+      Zajrzyj do `/etc/resolv.conf` i zobacz, skąd bierze się możliwość
+      pisania samego `web`.
+    hints:
+      - "`kubectl run klient --image=busybox:1.36 -n lfs458-m09 --command -- sleep 3600`"
+      - "Nazwa krótka działa dzięki liście `search` w `/etc/resolv.conf` — Pod dokleja do niej `lfs458-m09.svc.cluster.local`."
+      - "Jeśli `wget` zwraca `bad address`, sprawdź, czy CoreDNS działa: `kubectl get pods -n kube-system -l k8s-app=kube-dns`."
+    solution: |
+      ```bash
+      kubectl run klient --image=busybox:1.36 -n lfs458-m09 --command -- sleep 3600
+      kubectl wait --for=condition=Ready pod/klient -n lfs458-m09 --timeout=120s
+
+      kubectl exec -n lfs458-m09 klient -- wget -qO- http://web | head -3
+      kubectl exec -n lfs458-m09 klient -- wget -qO- http://web.lfs458-m09.svc.cluster.local | head -3
+      kubectl exec -n lfs458-m09 klient -- cat /etc/resolv.conf
+      ```
+    checks:
+      - name: "Pod klient działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m09
+          name: klient
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+      - name: "usługa odpowiada na nazwę krótką"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" exec -n lfs458-m09 klient \
+              -- wget -qO- --timeout=5 http://web
+          stdoutMatches: "nginx"
+      - name: "usługa odpowiada na pełny FQDN"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" exec -n lfs458-m09 klient \
+              -- wget -qO- --timeout=5 http://web.lfs458-m09.svc.cluster.local
+          stdoutMatches: "nginx"
+      - name: "Pod ma w resolv.conf domenę wyszukiwania namespace'u"
+        exec:
+          timeout: 30s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" exec -n lfs458-m09 klient \
+              -- cat /etc/resolv.conf
+          stdoutMatches: "search +lfs458-m09\\.svc\\.cluster\\.local"
+
+  - id: task-4
+    points: 4
+    description: |
+      **Zobacz, czym różni się Service headless.**
+
+      Utwórz Service **`web-headless`** wskazujący na te same Pody
+      (`app=web`), ale **bez adresu wirtualnego** — z `clusterIP: None`.
+
+      Potem porównaj odpowiedzi DNS dla obu usług:
+
+      ```bash
+      kubectl exec -n lfs458-m09 klient -- nslookup web
+      kubectl exec -n lfs458-m09 klient -- nslookup web-headless
+      ```
+
+      Zwykły Service zwróci **jeden** adres — wirtualny. Headless zwróci
+      **trzy** — adresy samych Podów.
+    hints:
+      - "`clusterIP: None` wpisuje się w `spec`, obok `selector` i `ports`."
+      - "Service headless nadal potrzebuje selektora i portów — po prostu nie dostaje wirtualnego adresu ani reguł kube-proxy."
+      - "Jeśli `nslookup web-headless` zwraca jeden adres, sprawdź `kubectl get svc web-headless -n lfs458-m09` — kolumna CLUSTER-IP ma pokazywać `None`."
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: web-headless
+        namespace: lfs458-m09
+      spec:
+        clusterIP: None
+        selector:
+          app: web
+        ports:
+          - port: 80
+            targetPort: 80
+      EOF
+
+      kubectl exec -n lfs458-m09 klient -- nslookup web-headless
+      ```
+    checks:
+      - name: "Service web-headless nie ma adresu wirtualnego"
+        resource:
+          apiVersion: v1
+          kind: Service
+          namespace: lfs458-m09
+          name: web-headless
+        assert:
+          - path: "{.spec.clusterIP}"
+            op: eq
+            value: None
+            message: "headless oznacza `clusterIP: None` — bez tego to zwykły ClusterIP"
+          - path: "{.spec.selector['app']}"
+            op: eq
+            value: web
+      - name: "DNS zwraca dla usługi headless adresy wszystkich Podów"
+        exec:
+          timeout: 40s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            n=$($K exec -n lfs458-m09 klient -- nslookup web-headless 2>/dev/null \
+                | grep -c '^Address' || true)
+            # nslookup wypisuje tez adres samego serwera DNS — stad trzy backendy to 4 linie
+            echo "adresow=$n"
+          stdoutMatches: "adresow=[4-9]"
+
+  - id: task-5
+    points: 3
+    optional: true
+    description: |
+      **Zrób alias do usługi spoza klastra.**
+
+      Zadanie dodatkowe. Utwórz Service **`zewnetrzna-baza`** typu
+      **ExternalName**, który wskazuje na `db.example.com`.
+
+      Taki Service nie ma selektora, endpointów ani adresu — CoreDNS zwraca
+      dla niego zwykły rekord `CNAME`.
+
+      ```bash
+      kubectl exec -n lfs458-m09 klient -- nslookup zewnetrzna-baza
+      ```
+
+      > Po co to komu: gdy będziesz przenosić bazę do klastra, wystarczy
+      > podmienić ten jeden Service. Manifesty aplikacji zostaną bez zmian.
+    hints:
+      - "Typ `ExternalName` wymaga pola `externalName` i **nie przyjmuje** ani `selector`, ani `ports`."
+      - "```yaml\nspec:\n  type: ExternalName\n  externalName: db.example.com\n```"
+      - "Sprawdź, że Service nie ma żadnych endpointów: `kubectl get endpointslices -n lfs458-m09 -l kubernetes.io/service-name=zewnetrzna-baza`."
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: zewnetrzna-baza
+        namespace: lfs458-m09
+      spec:
+        type: ExternalName
+        externalName: db.example.com
+      EOF
+
+      kubectl exec -n lfs458-m09 klient -- nslookup zewnetrzna-baza
+      ```
+    checks:
+      - name: "Service zewnetrzna-baza jest aliasem do db.example.com"
+        resource:
+          apiVersion: v1
+          kind: Service
+          namespace: lfs458-m09
+          name: zewnetrzna-baza
+        assert:
+          - path: "{.spec.type}"
+            op: eq
+            value: ExternalName
+          - path: "{.spec.externalName}"
+            op: eq
+            value: "db.example.com"
+      - name: "alias nie ma selektora ani adresu wirtualnego"
+        resource:
+          apiVersion: v1
+          kind: Service
+          namespace: lfs458-m09
+          name: zewnetrzna-baza
+        assert:
+          - path: "{.spec.selector}"
+            op: notExists
+            message: "ExternalName nie wybiera Podów — to czysty alias DNS"
+          - path: "{.spec.clusterIP}"
+            op: notExists
+            message: "ExternalName nie dostaje adresu wirtualnego"
+
+  - id: task-6
+    points: 2
+    description: |
+      **Sprawdź, co naprawdę stoi za Service'em.**
+
+      W namespace `lfs458-m09-quiz` lab wystawił aplikację. Odpowiedz
+      na pytania o to, jak klaster ją zaadresował.
+    quiz:
+      przygotuj:
+        timeout: 5m
+        script: |
+          K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+          $K create namespace lfs458-m09-quiz --dry-run=client -o yaml | $K apply -f - >/dev/null
+          $K create deployment adresy --image=nginx:1.27-alpine --replicas=3 \
+            -n lfs458-m09-quiz --dry-run=client -o yaml | $K apply -f - >/dev/null
+          $K rollout status deployment/adresy -n lfs458-m09-quiz --timeout=180s >/dev/null
+          $K expose deployment adresy --port=80 --target-port=80 -n lfs458-m09-quiz \
+            --dry-run=client -o yaml | $K apply -f - >/dev/null
+      pytania:
+        - pytanie: |
+            Ile adresów Podów ma w tej chwili EndpointSlice usługi `adresy`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get endpointslices -n lfs458-m09-quiz -l kubernetes.io/service-name=adresy \
+                -o jsonpath='{.items[*].endpoints[*].addresses[*]}' | wc -w | tr -d ' '
+          mylne: ["1", "2", "0"]
+          wskazowka: "kubectl get endpointslices -n lfs458-m09-quiz -l kubernetes.io/service-name=adresy -o yaml"
+
+        - pytanie: |
+            Jaki ClusterIP przydzielono usłudze `adresy`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get svc adresy -n lfs458-m09-quiz -o jsonpath='{.spec.clusterIP}'
+          mylne_z:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get svc -A -o jsonpath='{.items[*].spec.clusterIP}'
+          wskazowka: "kubectl get svc adresy -n lfs458-m09-quiz"
+
+        - pytanie: |
+            Jakiego typu jest ta usługa?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get svc adresy -n lfs458-m09-quiz -o jsonpath='{.spec.type}'
+          mylne: ["NodePort", "LoadBalancer", "ExternalName"]
+          wskazowka: "kolumna TYPE w `kubectl get svc -n lfs458-m09-quiz`"

@@ -1,0 +1,42 @@
+# ——— zależności i artefakty builda ———————————————————————————————
+# node_modules to ~200 MB i jest potrzebne tylko wtedy, gdy ktoś renderuje
+# slajdy przez npx zamiast samodzielnej binarki marpa.
+node_modules/
+build/
+
+# ——— stan lokalnych środowisk ————————————————————————————————————
+# Katalogi Vagranta z identyfikatorami maszyn — u każdego inne.
+.vagrant/
+*.box
+
+# Kubeconfigi i ich kopie: nigdy do repo, zawierają poświadczenia do klastra.
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+admin.conf
+*.conf.bak
+
+# Postęp kursanta (labctl trzyma go w ~/.labctl, ale gdyby ktoś przestawił
+# LABCTL_STATE na katalog repo).
+.labctl/
+
+# ——— pliki robocze ———————————————————————————————————————————————
+*.log
+*.bak
+*.tmp
+*~
+
+# Certyfikaty i klucze generowane w labach (moduł 09 robi je w /tmp,
+# ale gdyby ktoś wygenerował je u siebie w katalogu repo).
+*.key
+*.crt
+*.pem
+
+# ——— edytory i systemy ———————————————————————————————————————————
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+

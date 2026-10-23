@@ -1,0 +1,415 @@
+module: "04"
+title: "APIs and Access — rozmowa z serwerem API"
+chapter: 4
+chapterTitle: "APIs and Access"
+day: 1
+environment: kind-basic
+
+intro: |
+  Napiszesz manifest od zera, dołożysz adnotacje i porozmawiasz z klastrem
+  **bez `kubectl`**. Na koniec wyciągniesz z klastra jego własną dokumentację.
+
+  Przydatna sztuczka na cały ten lab — zobacz, co `kubectl` naprawdę wysyła:
+
+  ```bash
+  kubectl get pods -v=8 2>&1 | grep -E 'GET|Response Status'
+  ```
+
+cleanup:
+  - name: "Usuwam arkusz odpowiedzi"
+    timeout: 30s
+    ignoreError: true
+    script: |
+      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-04.txt"
+      echo "arkusz usunięty"
+  - name: "Usuwam namespace lfs458-m04"
+    timeout: 3m
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m04 --ignore-not-found --wait=true
+
+tasks:
+  - id: task-1
+    points: 4
+    description: |
+      **Napisz manifest Poda od zera.**
+
+      Utwórz namespace `lfs458-m04`, a w nim Poda `prosty` **z pliku YAML**
+      (nie `kubectl run`), spełniającego wszystkie warunki:
+
+      | Element | Wartość |
+      |---|---|
+      | obraz | `nginx:1.27-alpine` |
+      | etykiety | `app=lab04` oraz `warstwa=web` |
+      | port | nazwany `http`, numer `80` |
+      | `requests` | `cpu: 50m`, `memory: 64Mi` |
+      | `limits` | `memory: 128Mi` |
+
+      Szkielet wygenerujesz poleceniem, a resztę dopiszesz ręcznie:
+
+      ```bash
+      kubectl run prosty --image=nginx:1.27-alpine --dry-run=client -o yaml > prosty.yaml
+      ```
+    hints:
+      - "Nazwy pól sprawdzisz bez wychodzenia z terminala: `kubectl explain pod.spec.containers.resources` i `kubectl explain pod.spec.containers.ports`."
+      - "Porty to lista: każdy element ma `name` i `containerPort`. Nazwa portu może mieć najwyżej 15 znaków."
+      - "Etykiety idą do `metadata.labels`, a nie do `spec`. Zasoby — do `spec.containers[].resources`."
+      - "Komplet:\n\n```yaml\napiVersion: v1\nkind: Pod\nmetadata:\n  name: prosty\n  namespace: lfs458-m04\n  labels:\n    app: lab04\n    warstwa: web\nspec:\n  containers:\n    - name: nginx\n      image: nginx:1.27-alpine\n      ports:\n        - name: http\n          containerPort: 80\n      resources:\n        requests:\n          cpu: 50m\n          memory: 64Mi\n        limits:\n          memory: 128Mi\n```"
+    solution: |
+      ```bash
+      kubectl create namespace lfs458-m04
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: prosty
+        namespace: lfs458-m04
+        labels:
+          app: lab04
+          warstwa: web
+      spec:
+        containers:
+          - name: nginx
+            image: nginx:1.27-alpine
+            ports:
+              - name: http
+                containerPort: 80
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                memory: 128Mi
+      EOF
+      ```
+    checks:
+      - name: "Pod prosty działa w namespace lfs458-m04"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m04
+          name: prosty
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+            message: "poczekaj, aż Pod wstanie — `kubectl get pod prosty -n lfs458-m04`"
+          - path: "{.spec.containers[*].image}"
+            op: eq
+            value: "nginx:1.27-alpine"
+      - name: "Pod ma wymagane etykiety"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m04
+          name: prosty
+        assert:
+          - path: "{.metadata.labels['app']}"
+            op: eq
+            value: lab04
+            message: "etykiety idą do metadata.labels"
+          - path: "{.metadata.labels['warstwa']}"
+            op: eq
+            value: web
+      - name: "port nazywa się http i ma numer 80"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m04
+          name: prosty
+        assert:
+          - path: "{.spec.containers[*].ports[*].name}"
+            op: eq
+            value: http
+            message: "`kubectl explain pod.spec.containers.ports` — pole `name`"
+          - path: "{.spec.containers[*].ports[*].containerPort}"
+            op: eq
+            value: 80
+      - name: "ustawiono requests i limits"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m04
+          name: prosty
+        assert:
+          - path: "{.spec.containers[*].resources.requests.cpu}"
+            op: eq
+            value: "50m"
+            message: "requests.cpu ma być 50m"
+          - path: "{.spec.containers[*].resources.requests.memory}"
+            op: eq
+            value: "64Mi"
+          - path: "{.spec.containers[*].resources.limits.memory}"
+            op: eq
+            value: "128Mi"
+
+  - id: task-2
+    points: 3
+    description: |
+      **Dołóż adnotacje i zobacz, czym różnią się od etykiet.**
+
+      Nadaj Podowi `prosty`:
+
+      - adnotację `lfs458.io/wlasciciel` z adresem e-mail,
+      - adnotację `lfs458.io/opis` z opisem **dłuższym niż 63 znaki**,
+      - etykietę `wersja=v1`.
+
+      Potem spróbuj wybrać Poda po adnotacji:
+
+      ```bash
+      kubectl get pods -n lfs458-m04 -l lfs458.io/wlasciciel
+      ```
+
+      Nic nie znajdzie — i o to chodzi. Selektory działają **wyłącznie**
+      po etykietach.
+    hints:
+      - "Adnotacje dodaje się jak etykiety, innym poleceniem: `kubectl annotate pod <nazwa> -n <ns> klucz=wartość`."
+      - "Wartość etykiety nie może przekroczyć 63 znaków — dlatego długi opis musi być adnotacją. Spróbuj wpisać go jako etykietę i przeczytaj komunikat błędu."
+      - "Komplet:\n\n```bash\nkubectl annotate pod prosty -n lfs458-m04 \\\n  lfs458.io/wlasciciel='zespol-platformy@example.com'\nkubectl annotate pod prosty -n lfs458-m04 \\\n  lfs458.io/opis='Pod demonstracyjny modulu 04 — sluzy do cwiczen z API, etykiet i adnotacji'\nkubectl label pod prosty -n lfs458-m04 wersja=v1\n```"
+    solution: |
+      ```bash
+      kubectl annotate pod prosty -n lfs458-m04 \
+        lfs458.io/wlasciciel='zespol-platformy@example.com'
+      kubectl annotate pod prosty -n lfs458-m04 \
+        lfs458.io/opis='Pod demonstracyjny modulu 04 — sluzy do cwiczen z API, etykiet i adnotacji'
+      kubectl label pod prosty -n lfs458-m04 wersja=v1
+
+      # dowód, że po adnotacji nie da się wybierać
+      kubectl get pods -n lfs458-m04 -l lfs458.io/wlasciciel
+      ```
+    checks:
+      - name: "adnotacja lfs458.io/wlasciciel zawiera adres e-mail"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m04
+          name: prosty
+        assert:
+          - path: "{.metadata.annotations['lfs458\\.io/wlasciciel']}"
+            op: matches
+            value: "^[^@[:space:]]+@[^@[:space:]]+\\.[a-zA-Z]{2,}$"
+            message: "adnotacja ma zawierać adres e-mail, np. zespol@example.com"
+      - name: "adnotacja lfs458.io/opis jest dłuższa niż etykieta może być"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m04
+          name: prosty
+        assert:
+          - path: "{.metadata.annotations['lfs458\\.io/opis']}"
+            op: matches
+            value: "^.{64,}$"
+            message: "opis ma mieć ponad 63 znaki — tyle, ile NIE zmieściłoby się w etykiecie"
+      - name: "dodano etykietę wersja=v1"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m04
+          name: prosty
+        assert:
+          - path: "{.metadata.labels['wersja']}"
+            op: eq
+            value: v1
+      - name: "Poda da się wybrać selektorem po etykiecie"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m04
+          labelSelector: "app=lab04,wersja=v1"
+        assert:
+          - path: "{.items[*].metadata.name}"
+            op: eq
+            value: prosty
+            count:
+              op: eq
+              value: 1
+            message: "selektor `app=lab04,wersja=v1` powinien trafić dokładnie w Poda `prosty`"
+
+  - id: task-3
+    points: 3
+    description: |
+      **Odpytaj API bez `kubectl get`.**
+
+      Uruchom `kubectl proxy` i pobierz `curl`-em listę Podów z namespace
+      `lfs458-m04`. Przyjrzyj się, co zwraca serwer: adresowi, polu `kind`
+      w odpowiedzi i strukturze `items`.
+
+      Zapisz wyniki w arkuszu **`~/odpowiedzi/lab-04.txt`**:
+
+      | Klucz | Co ma zawierać |
+      |---|---|
+      | `sciezka-podow` | ścieżka URL, pod którą odpytujesz Pody tego namespace'u |
+      | `kind-odpowiedzi` | wartość pola `kind` w odpowiedzi serwera |
+      | `grupa-deploymentow` | `apiVersion` zasobu Deployment |
+    hints:
+      - "`kubectl proxy --port=8001 &` wystawia API na localhost bez uwierzytelniania. Zatrzymasz go potem przez `kill %1`."
+      - "Ścieżka do Podów w namespace: grupa rdzeniowa `v1` siedzi pod `/api`, nie pod `/apis`."
+      - "`curl -s http://localhost:8001/api/v1/namespaces/lfs458-m04/pods | jq '.kind'` — serwer zwraca listę, a listy mają własny `kind`."
+      - "Wartości: `/api/v1/namespaces/lfs458-m04/pods`, `PodList`, `apps/v1`. Deployment sprawdzisz przez `kubectl api-resources | grep deployments`."
+    solution: |
+      ```bash
+      kubectl proxy --port=8001 &
+      curl -s http://localhost:8001/api/v1/namespaces/lfs458-m04/pods | jq '.kind, (.items | length)'
+      kill %1
+
+      # to samo bez proxy:
+      kubectl get --raw /api/v1/namespaces/lfs458-m04/pods | jq '.kind'
+
+      cat >> ~/odpowiedzi/lab-04.txt <<'EOF'
+      sciezka-podow=/api/v1/namespaces/lfs458-m04/pods
+      kind-odpowiedzi=PodList
+      grupa-deploymentow=apps/v1
+      EOF
+      ```
+    checks:
+      - name: "podano poprawną ścieżkę API do Podów namespace'u"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 04 sciezka-podow)
+            [ "$V" = '/api/v1/namespaces/lfs458-m04/pods' ] || ZLE="$ZLE sciezka-podow"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "podano kind odpowiedzi serwera"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 04 kind-odpowiedzi)
+            [ "$V" = 'PodList' ] || ZLE="$ZLE kind-odpowiedzi"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "podano apiVersion Deploymentu"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 04 grupa-deploymentow)
+            [ "$V" = 'apps/v1' ] || ZLE="$ZLE grupa-deploymentow"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+  - id: task-4
+    points: 3
+    description: |
+      **Wyciągnij z klastra jego własną dokumentację.**
+
+      Cztery pytania, na które klaster odpowiada sam — bez otwierania
+      przeglądarki. Każdej odpowiedzi szukasz jednym poleceniem.
+
+      ```bash
+      kubectl api-resources -o wide
+      kubectl explain pod.spec.restartPolicy
+      ```
+    quiz:
+      pytania:
+        - pytanie: |
+            Jaki jest skrócony alias zasobu `persistentvolumeclaims`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" api-resources \
+                | awk '$1=="persistentvolumeclaims" {print $2}'
+          mylne: ["pv", "pvclaim", "claims"]
+          wskazowka: "kolumna SHORTNAMES w `kubectl api-resources`"
+
+        - pytanie: |
+            Czy `Node` jest zasobem namespace'owanym?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" api-resources \
+                | awk '$1=="nodes" {print $(NF-1)}'
+          mylne: ["true"]
+          wskazowka: "kolumna NAMESPACED; `kubectl api-resources --namespaced=false | grep nodes`"
+
+        - pytanie: |
+            Jaki `apiVersion` ma zasób `Ingress`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" api-resources \
+                | awk '$1=="ingresses" {print $(NF-2)}'
+          mylne: ["extensions/v1beta1", "networking.k8s.io/v1beta1", "v1"]
+          wskazowka: "kolumna APIVERSION w `kubectl api-resources | grep ingresses`"
+
+        - pytanie: |
+            Jaka jest **domyślna** wartość pola `pod.spec.restartPolicy`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" explain pod.spec.restartPolicy 2>/dev/null \
+                | grep -oE 'Default to [A-Za-z]+' | awk '{print $3}'
+          mylne: ["OnFailure", "Never", "IfNotPresent"]
+          wskazowka: "ostatnie zdanie opisu w `kubectl explain pod.spec.restartPolicy`"
+
+  - id: task-5
+    points: 3
+    optional: true
+    description: |
+      **Utwórz obiekt, wysyłając JSON prosto do API.**
+
+      Zadanie dodatkowe. Utwórz Poda `przez-api` w `lfs458-m04`
+      **bez `kubectl apply` i bez `kubectl create -f`** — wysyłając JSON
+      metodą POST pod ścieżkę zasobu.
+
+      Pod ma używać obrazu `nginx:1.27-alpine` i mieć adnotację
+      `lfs458.io/utworzony: raw-api`.
+
+      ```bash
+      kubectl create --raw /api/v1/namespaces/lfs458-m04/pods -f pod.json
+      ```
+    hints:
+      - "`kubectl create --raw` przyjmuje **JSON**, nie YAML. Przekonwertuj manifest: `kubectl create -f pod.yaml --dry-run=client -o json > pod.json`."
+      - "Ścieżka jest ta sama, co w zadaniu 3 — POST na kolekcję tworzy w niej nowy element."
+      - "Alternatywnie przez `kubectl proxy`:\n\n```bash\ncurl -s -X POST http://localhost:8001/api/v1/namespaces/lfs458-m04/pods \\\n  -H 'Content-Type: application/json' --data-binary @pod.json\n```"
+    solution: |
+      ```bash
+      cat > /tmp/pod.json <<'EOF'
+      {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+          "name": "przez-api",
+          "namespace": "lfs458-m04",
+          "annotations": {"lfs458.io/utworzony": "raw-api"}
+        },
+        "spec": {
+          "containers": [{"name": "nginx", "image": "nginx:1.27-alpine"}]
+        }
+      }
+      EOF
+
+      kubectl create --raw /api/v1/namespaces/lfs458-m04/pods -f /tmp/pod.json
+      kubectl get pod przez-api -n lfs458-m04
+      ```
+    checks:
+      - name: "Pod przez-api istnieje i działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m04
+          name: przez-api
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+          - path: "{.spec.containers[*].image}"
+            op: eq
+            value: "nginx:1.27-alpine"
+      - name: "Pod ma adnotację lfs458.io/utworzony=raw-api"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m04
+          name: przez-api
+        assert:
+          - path: "{.metadata.annotations['lfs458\\.io/utworzony']}"
+            op: eq
+            value: raw-api
+      - name: "Pod NIE ma adnotacji last-applied-configuration (nie powstał przez apply)"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m04
+          name: przez-api
+        assert:
+          - path: "{.metadata.annotations['kubectl\\.kubernetes\\.io/last-applied-configuration']}"
+            op: notExists
+            message: "ta adnotacja pojawia się tylko przy `kubectl apply` — tutaj Pod ma powstać przez surowe API"

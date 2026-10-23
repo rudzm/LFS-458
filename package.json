@@ -1,0 +1,16 @@
+{
+  "name": "lfs458-materials",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LFS458 — materiały szkoleniowe: slajdy (marp) i laby",
+  "scripts": {
+    "slides": "marp --config-file .marprc.yml --pdf --pdf-outlines --allow-local-files -I slides -o build/pdf",
+    "watch": "marp --config-file .marprc.yml --server slides"
+  },
+  "devDependencies": {
+    "@marp-team/marp-cli": "^4.5.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

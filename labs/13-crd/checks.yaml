@@ -1,0 +1,527 @@
+module: "13"
+title: "Custom Resource Definition — własny zasób w API"
+chapter: 13
+chapterTitle: "Custom Resource Definition"
+day: 3
+environment: kind-basic
+
+intro: |
+  Dołożysz do API klastra własny rodzaj obiektu — bez zmieniania czegokolwiek
+  w samym Kubernetesie. Po drodze zobaczysz, że nowy zasób jest traktowany
+  dokładnie tak samo jak Pod czy Service: ma skróty, kolumny, walidację i RBAC.
+
+  ```bash
+  kubectl get crd
+  kubectl api-resources --api-group=lfs458.io
+  ```
+
+cleanup:
+  - name: "Usuwam arkusz odpowiedzi"
+    timeout: 30s
+    ignoreError: true
+    script: |
+      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-13.txt"
+      echo "arkusz usunięty"
+  - name: "Usuwam namespace lfs458-m13"
+    timeout: 3m
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m13 --ignore-not-found --wait=true
+  - name: "Usuwam CRD i obiekty klastrowe modułu"
+    timeout: 3m
+    ignoreError: true
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      $K delete crd zadania.lfs458.io --ignore-not-found
+      echo "CRD usunięty — razem z nim znikają wszystkie obiekty tego typu"
+  - name: "Usuwam CRD zadania quizowego"
+    timeout: 3m
+    ignoreError: true
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete crd maszyny.quiz.lfs458.io \
+        --ignore-not-found
+
+tasks:
+  - id: task-1
+    points: 4
+    description: |
+      **Zarejestruj własny rodzaj obiektu.**
+
+      Utwórz CustomResourceDefinition opisujący zasób **`Zadanie`**:
+
+      | Pole | Wartość |
+      |---|---|
+      | nazwa CRD | `zadania.lfs458.io` |
+      | grupa | `lfs458.io` |
+      | zasięg | `Namespaced` |
+      | wersja | `v1` (`served: true`, `storage: true`) |
+      | `plural` / `singular` / `kind` | `zadania` / `zadanie` / `Zadanie` |
+      | `shortNames` | `zad` |
+
+      Schemat ma wymagać pola **`spec.opis`** (tekst, min. 3 znaki) i dopuszczać
+      **`spec.priorytet`** (liczba całkowita **1–5**, domyślnie `3`).
+
+      ```bash
+      kubectl get crd zadania.lfs458.io
+      kubectl api-resources --api-group=lfs458.io
+      ```
+    hints:
+      - "Nazwa CRD **musi** brzmieć `<liczba mnoga>.<grupa>` — czyli dokładnie `zadania.lfs458.io`. Inna nazwa zostanie odrzucona przez API."
+      - "Schemat idzie do `spec.versions[0].schema.openAPIV3Schema`. Zawsze zaczyna się od `type: object` i zagnieżdżonych `properties`."
+      - "Ograniczenia liczby: `minimum` i `maximum`. Ograniczenie tekstu: `minLength`. Wymagane pola: lista `required` na poziomie obiektu, który je zawiera."
+      - "Szkielet:\n\n```yaml\napiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: zadania.lfs458.io\nspec:\n  group: lfs458.io\n  scope: Namespaced\n  names:\n    plural: zadania\n    singular: zadanie\n    kind: Zadanie\n    shortNames: [zad]\n  versions:\n    - name: v1\n      served: true\n      storage: true\n      schema:\n        openAPIV3Schema:\n          type: object\n          properties:\n            spec:\n              type: object\n              required: [opis]\n              properties:\n                opis: {type: string, minLength: 3}\n                priorytet: {type: integer, minimum: 1, maximum: 5, default: 3}\n```"
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: zadania.lfs458.io
+      spec:
+        group: lfs458.io
+        scope: Namespaced
+        names:
+          plural: zadania
+          singular: zadanie
+          kind: Zadanie
+          shortNames: [zad]
+        versions:
+          - name: v1
+            served: true
+            storage: true
+            schema:
+              openAPIV3Schema:
+                type: object
+                properties:
+                  spec:
+                    type: object
+                    required: [opis]
+                    properties:
+                      opis:      {type: string, minLength: 3}
+                      priorytet: {type: integer, minimum: 1, maximum: 5, default: 3}
+      EOF
+
+      kubectl get crd zadania.lfs458.io
+      ```
+    checks:
+      - name: "CRD zadania.lfs458.io istnieje i został przyjęty"
+        resource:
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          name: zadania.lfs458.io
+        assert:
+          - path: "{.spec.group}"
+            op: eq
+            value: "lfs458.io"
+          - path: "{.spec.scope}"
+            op: eq
+            value: Namespaced
+          - path: "{.status.conditions[?(@.type=='Established')].status}"
+            op: eq
+            value: "True"
+            message: "CRD nie został jeszcze zarejestrowany — sprawdź `kubectl describe crd zadania.lfs458.io`"
+      - name: "zasób ma właściwe nazwy i skrót"
+        resource:
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          name: zadania.lfs458.io
+        assert:
+          - path: "{.spec.names.kind}"
+            op: eq
+            value: Zadanie
+          - path: "{.spec.names.shortNames[*]}"
+            op: eq
+            value: zad
+            message: "dodaj `shortNames: [zad]` — dzięki temu zadziała `kubectl get zad`"
+      - name: "schemat waliduje pola spec"
+        resource:
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          name: zadania.lfs458.io
+        assert:
+          - path: "{.spec.versions[*].schema.openAPIV3Schema.properties.spec.required[*]}"
+            op: eq
+            value: opis
+            quantifier: any
+            message: "pole `opis` ma być wymagane — dodaj je do listy `required`"
+          - path: "{.spec.versions[*].schema.openAPIV3Schema.properties.spec.properties.priorytet.maximum}"
+            op: eq
+            value: 5
+            message: "priorytet ma być ograniczony do zakresu 1–5"
+
+  - id: task-2
+    points: 3
+    description: |
+      **Utwórz obiekt i sprawdź, że walidacja działa.**
+
+      1. W namespace `lfs458-m13` utwórz obiekt `Zadanie` o nazwie
+         **`sprzatanie`** z opisem `Posprzatac po labie` i priorytetem `2`
+      2. Spróbuj utworzyć drugi obiekt z priorytetem **`9`** i przeczytaj,
+         co odpowie serwer
+
+      ```bash
+      kubectl get zadania -n lfs458-m13
+      kubectl get zad -n lfs458-m13
+      ```
+
+      > Odrzucenie następuje w apiserverze. To nie `kubectl` sprawdza manifest —
+      > przekonasz się o tym, próbując `kubectl apply --dry-run=server`.
+    hints:
+      - "Obiekt tworzy się zwykłym manifestem: `apiVersion: lfs458.io/v1`, `kind: Zadanie`."
+      - "```yaml\napiVersion: lfs458.io/v1\nkind: Zadanie\nmetadata:\n  name: sprzatanie\n  namespace: lfs458-m13\nspec:\n  opis: Posprzatac po labie\n  priorytet: 2\n```"
+      - "Do sprawdzenia walidacji nie musisz niczego zapisywać: `kubectl apply --dry-run=server -f zle.yaml` zwróci ten sam błąd, co prawdziwy zapis."
+    solution: |
+      ```bash
+      kubectl create namespace lfs458-m13
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: lfs458.io/v1
+      kind: Zadanie
+      metadata:
+        name: sprzatanie
+        namespace: lfs458-m13
+      spec:
+        opis: Posprzatac po labie
+        priorytet: 2
+      EOF
+
+      # próba z priorytetem poza zakresem — serwer odmawia
+      cat <<'EOF' | kubectl apply --dry-run=server -f -
+      apiVersion: lfs458.io/v1
+      kind: Zadanie
+      metadata:
+        name: zle
+        namespace: lfs458-m13
+      spec:
+        opis: Test
+        priorytet: 9
+      EOF
+      ```
+    checks:
+      - name: "obiekt Zadanie/sprzatanie istnieje"
+        resource:
+          apiVersion: lfs458.io/v1
+          kind: Zadanie
+          namespace: lfs458-m13
+          name: sprzatanie
+        assert:
+          - path: "{.spec.opis}"
+            op: matches
+            value: ".{3,}"
+            message: "pole `opis` musi mieć co najmniej 3 znaki"
+          - path: "{.spec.priorytet}"
+            op: eq
+            value: 2
+      - name: "w namespace nie ma obiektu z niedozwolonym priorytetem"
+        resource:
+          apiVersion: lfs458.io/v1
+          kind: Zadanie
+          namespace: lfs458-m13
+          mustExist: false
+        assert:
+          - path: "{.items[*].spec.priorytet}"
+            op: gt
+            value: 5
+            quantifier: none
+            message: "schemat nie powinien wpuścić priorytetu spoza zakresu 1–5"
+
+  - id: task-3
+    points: 3
+    description: |
+      **Dodaj wygody, których oczekujesz od zasobu wbudowanego.**
+
+      Rozszerz CRD `zadania.lfs458.io` o:
+
+      1. **`additionalPrinterColumns`** — kolumny `Opis` (`.spec.opis`,
+         typ `string`) i `Priorytet` (`.spec.priorytet`, typ `integer`)
+      2. **podzasób `status`** (`subresources.status: {}`)
+
+      Potem zobacz efekt:
+
+      ```bash
+      kubectl get zadania -n lfs458-m13
+      ```
+    hints:
+      - "Oba pola trafiają **do elementu listy `versions`**, obok `schema` — a nie do `spec` na najwyższym poziomie."
+      - "Podzasób status włącza się pustym obiektem: `subresources: {status: {}}`."
+      - "Jeśli włączasz `subresources.status`, schemat powinien mieć też `properties.status` typu `object` — inaczej pole zostanie odcięte przy zapisie."
+      - "```yaml\nversions:\n  - name: v1\n    served: true\n    storage: true\n    subresources:\n      status: {}\n    additionalPrinterColumns:\n      - {name: Opis, type: string, jsonPath: .spec.opis}\n      - {name: Priorytet, type: integer, jsonPath: .spec.priorytet}\n    schema: …\n```"
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: zadania.lfs458.io
+      spec:
+        group: lfs458.io
+        scope: Namespaced
+        names:
+          plural: zadania
+          singular: zadanie
+          kind: Zadanie
+          shortNames: [zad]
+        versions:
+          - name: v1
+            served: true
+            storage: true
+            subresources:
+              status: {}
+            additionalPrinterColumns:
+              - {name: Opis, type: string, jsonPath: .spec.opis}
+              - {name: Priorytet, type: integer, jsonPath: .spec.priorytet}
+            schema:
+              openAPIV3Schema:
+                type: object
+                properties:
+                  spec:
+                    type: object
+                    required: [opis]
+                    properties:
+                      opis:      {type: string, minLength: 3}
+                      priorytet: {type: integer, minimum: 1, maximum: 5, default: 3}
+                  status:
+                    type: object
+                    properties:
+                      stan: {type: string}
+      EOF
+
+      kubectl get zadania -n lfs458-m13
+      ```
+    checks:
+      - name: "CRD ma własne kolumny wydruku"
+        resource:
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          name: zadania.lfs458.io
+        assert:
+          - path: "{.spec.versions[*].additionalPrinterColumns[*].jsonPath}"
+            op: oneOf
+            value: ".spec.opis, .spec.priorytet"
+            quantifier: all
+            count:
+              op: eq
+              value: 2
+            message: "dodaj dwie kolumny: Opis (.spec.opis) i Priorytet (.spec.priorytet)"
+      - name: "CRD ma włączony podzasób status"
+        resource:
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          name: zadania.lfs458.io
+        assert:
+          - path: "{.spec.versions[*].subresources.status}"
+            op: exists
+            quantifier: any
+            message: "dodaj `subresources: {status: {}}` — dzięki temu kontroler może pisać status, nie ruszając spec"
+      - name: "kolumny są widoczne w kubectl get"
+        exec:
+          timeout: 40s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" get zad -n lfs458-m13
+          stdoutMatches: "PRIORYTET"
+
+  - id: task-4
+    points: 3
+    description: |
+      **Obejmij własny zasób kontrolą dostępu.**
+
+      Nowy typ nie daje nikomu automatycznych uprawnień. Sprawdź to i napraw:
+
+      1. Utwórz ServiceAccount **`operator-zadan`** w `lfs458-m13`
+      2. Utwórz Role **`zadania-odczyt`** pozwalającą na `get`, `list`, `watch`
+         zasobu `zadania` w grupie `lfs458.io`
+      3. Zwiąż je RoleBindingiem **`operator-zadan`**
+
+      ```bash
+      SA=system:serviceaccount:lfs458-m13:operator-zadan
+      kubectl auth can-i list zadania --as=$SA -n lfs458-m13     # ma być yes
+      kubectl auth can-i delete zadania --as=$SA -n lfs458-m13   # ma być no
+      ```
+    hints:
+      - "W regule RBAC podaje się `apiGroups: [\"lfs458.io\"]` i `resources: [\"zadania\"]` — czyli **liczbę mnogą**, tak jak w adresie URL."
+      - "`kubectl create role zadania-odczyt --verb=get,list,watch --resource=zadania.lfs458.io -n lfs458-m13` sam rozpozna grupę."
+      - "Nie dodawaj czasowników zapisu — sprawdzenie wymaga, żeby konto **nie mogło** usuwać."
+    solution: |
+      ```bash
+      kubectl create serviceaccount operator-zadan -n lfs458-m13
+      kubectl create role zadania-odczyt \
+        --verb=get,list,watch --resource=zadania.lfs458.io -n lfs458-m13
+      kubectl create rolebinding operator-zadan \
+        --role=zadania-odczyt --serviceaccount=lfs458-m13:operator-zadan -n lfs458-m13
+
+      SA=system:serviceaccount:lfs458-m13:operator-zadan
+      kubectl auth can-i list zadania --as=$SA -n lfs458-m13
+      kubectl auth can-i delete zadania --as=$SA -n lfs458-m13
+      ```
+    checks:
+      - name: "Role obejmuje zasób z grupy lfs458.io"
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          namespace: lfs458-m13
+          name: zadania-odczyt
+        assert:
+          - path: "{.rules[*].apiGroups[*]}"
+            op: eq
+            value: "lfs458.io"
+            quantifier: any
+            message: "reguła ma dotyczyć grupy `lfs458.io`, a nie grupy rdzeniowej"
+          - path: "{.rules[*].resources[*]}"
+            op: eq
+            value: zadania
+            quantifier: any
+      - name: "RoleBinding wiąże Role z ServiceAccountem"
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          namespace: lfs458-m13
+          name: operator-zadan
+        assert:
+          - path: "{.roleRef.name}"
+            op: eq
+            value: zadania-odczyt
+          - path: "{.subjects[*].name}"
+            op: eq
+            value: operator-zadan
+      - name: "konto może czytać zadania, ale nie może ich usuwać"
+        exec:
+          timeout: 40s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            SA=system:serviceaccount:lfs458-m13:operator-zadan
+            a=$($K auth can-i list zadania   --as=$SA -n lfs458-m13)
+            b=$($K auth can-i delete zadania --as=$SA -n lfs458-m13)
+            echo "list=$a delete=$b"
+          stdoutMatches: "list=yes delete=no"
+
+  - id: task-5
+    points: 3
+    optional: true
+    description: |
+      **Zajrzyj do API agregowanego, które już masz.**
+
+      Zadanie dodatkowe. W klastrze działa jedno API agregowane —
+      `metrics-server` z modułu 12. Zbadaj je i opisz w arkuszu
+      **`~/odpowiedzi/lab-13.txt`**:
+
+      | Klucz | Co ma zawierać |
+      |---|---|
+      | `apiservice` | pełna nazwa obiektu APIService dla metryk |
+      | `usluga` | nazwa Service'u, do którego apiserver przekazuje żądania |
+      | `roznica` | jednym słowem: gdzie leżą dane CRD, a gdzie dane API agregowanego |
+
+      ```bash
+      kubectl get apiservices | grep -v Local
+      kubectl get apiservice v1beta1.metrics.k8s.io -o yaml
+      ```
+    hints:
+      - "`kubectl get apiservices | grep -v Local` pokaże wszystkie, które **nie są** obsługiwane lokalnie przez apiserver."
+      - "Pole `spec.service` w obiekcie APIService wskazuje nazwę i namespace usługi obsługującej tę grupę."
+      - "Dane CRD leżą w **etcd**; dane API agregowanego — tam, gdzie zdecyduje jego serwer (metrics-server trzyma je w pamięci). Do klucza `roznica` wpisz `etcd`."
+    solution: |
+      ```bash
+      kubectl get apiservices | grep -v Local
+      kubectl get apiservice v1beta1.metrics.k8s.io \
+        -o jsonpath='{.spec.service.name}{"\n"}'
+
+      cat >> ~/odpowiedzi/lab-13.txt <<'EOF'
+      apiservice=v1beta1.metrics.k8s.io
+      usluga=metrics-server
+      roznica=etcd
+      EOF
+      ```
+    checks:
+      - name: "wskazano APIService i usługę obsługującą metryki"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 13 apiservice)
+            [ "$V" = 'v1beta1.metrics.k8s.io' ] || ZLE="$ZLE apiservice"
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 13 usluga)
+            [ "$V" = 'metrics-server' ] || ZLE="$ZLE usluga"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "wiadomo, gdzie leżą dane zasobów CRD"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 13 roznica)
+            printf '%s' "$V" | grep -qE '(?i)etcd' || ZLE="$ZLE roznica"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+      - name: "APIService metryk faktycznie działa"
+        resource:
+          apiVersion: apiregistration.k8s.io/v1
+          kind: APIService
+          name: v1beta1.metrics.k8s.io
+        assert:
+          - path: "{.status.conditions[?(@.type=='Available')].status}"
+            op: eq
+            value: "True"
+            message: "metrics-server nie odpowiada — sprawdź `kubectl get pods -n kube-system`"
+
+  # Quiz instaluje WŁASNY CRD w innej grupie niż ten z zadań, żeby nie
+  # mieszać się kursantowi w `zadania.lfs458.io`.
+  - id: task-6
+    points: 2
+    description: |
+      **Zobacz, jak klaster opisuje zasób, którego nie znał wczoraj.**
+
+      Lab zarejestrował dodatkowy CRD. Odpowiedz na pytania o to, co klaster
+      teraz o nim wie — tak samo, jak pytałbyś o zasób wbudowany.
+    quiz:
+      przygotuj:
+        timeout: 3m
+        script: |
+          K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+          cat <<'YAML' | $K apply -f - >/dev/null
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          metadata: {name: maszyny.quiz.lfs458.io}
+          spec:
+            group: quiz.lfs458.io
+            scope: Cluster
+            names:
+              plural: maszyny
+              singular: maszyna
+              kind: Maszyna
+              shortNames: [msz]
+            versions:
+              - name: v2
+                served: true
+                storage: true
+                schema:
+                  openAPIV3Schema:
+                    type: object
+                    properties:
+                      spec:
+                        type: object
+                        properties:
+                          model: {type: string}
+          YAML
+          $K wait --for=condition=Established crd/maszyny.quiz.lfs458.io --timeout=60s >/dev/null
+      pytania:
+        - pytanie: |
+            Jaki skrót (`SHORTNAMES`) ma zasób `Maszyna`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" api-resources --api-group=quiz.lfs458.io --no-headers | awk '{print $2}'
+          mylne: ["mas", "mszn", "ma"]
+          wskazowka: "kubectl api-resources --api-group=quiz.lfs458.io"
+
+        - pytanie: |
+            Jaki pełny `apiVersion` ma ten zasób?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" api-resources --api-group=quiz.lfs458.io --no-headers | awk '{print $3}'
+          mylne: ["quiz.lfs458.io/v1", "lfs458.io/v2", "apiextensions.k8s.io/v1"]
+          wskazowka: "kolumna APIVERSION w tym samym poleceniu"
+
+        - pytanie: |
+            Czy `Maszyna` jest zasobem namespace'owanym?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" api-resources --api-group=quiz.lfs458.io --no-headers | awk '{print $4}'
+          mylne: ["true"]
+          wskazowka: "porównaj z `zadania.lfs458.io` z zadania 1 — tam zasięg jest inny"

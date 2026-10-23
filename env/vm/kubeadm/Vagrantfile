@@ -1,0 +1,47 @@
+# Środowisko modułu 02 — dwie maszyny z gotowym systemem i BEZ klastra.
+# Klaster stawia kursant własnymi rękami: kubeadm init, CNI, kubeadm join.
+#
+#   cp      k8s-cp      192.168.56.10   (control plane)
+#   worker  k8s-worker  192.168.56.11   (węzeł roboczy)
+#
+# Nazwy maszyn (`cp`, `worker`) i hostname'y (`k8s-cp`, `k8s-worker`) są
+# twarde — treść laba i checki modułu 02 odwołują się do nich dosłownie.
+#
+#   vagrant up              # pierwsze uruchomienie: kilkanaście minut
+#   vagrant ssh cp
+#   vagrant destroy -f
+
+K8S_MINOR = ENV.fetch("K8S_MINOR", "v1.36")   # o jeden minor niżej niż kind —
+                                              # lab 16 podnosi te maszyny do v1.37
+
+NODES = [
+  { name: "cp",     hostname: "k8s-cp",     ip: "192.168.56.10", cpus: 2, mem: 2560 },
+  { name: "worker", hostname: "k8s-worker", ip: "192.168.56.11", cpus: 2, mem: 2048 },
+]
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+
+  NODES.each do |node|
+    config.vm.define node[:name] do |m|
+      m.vm.hostname = node[:hostname]
+      m.vm.network "private_network", ip: node[:ip]
+
+      m.vm.provider "virtualbox" do |vb|
+        vb.name   = "lfs458-#{node[:hostname]}"
+        vb.cpus   = node[:cpus]          # kubeadm wymaga 2 rdzeni na control plane
+        vb.memory = node[:mem]
+        # Bez tego DNS w gościu potyka się o resolver hosta.
+        vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+      end
+
+      m.vm.provision "shell",
+        path: "provision.sh",
+        env: {
+          "K8S_MINOR" => K8S_MINOR,
+          "NODE_IP"   => node[:ip],
+        }
+    end
+  end
+end

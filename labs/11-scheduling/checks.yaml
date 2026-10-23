@@ -1,0 +1,483 @@
+module: "11"
+title: "Scheduling — sterowanie rozmieszczeniem Podów"
+chapter: 11
+chapterTitle: "Scheduling"
+day: 3
+environment: kind-basic
+
+intro: |
+  Pięć mechanizmów decydujących o tym, gdzie wyląduje Pod. Każdy daje efekt
+  widoczny natychmiast — trzymaj pod ręką:
+
+  ```bash
+  kubectl get pods -n lfs458-m11 -o wide
+  ```
+
+  > **Zadanie 2 celowo tworzy Pod, który zostaje w `Pending`.** To nie awaria,
+  > tylko materiał do diagnozy.
+
+cleanup:
+  - name: "Usuwam arkusz odpowiedzi"
+    timeout: 30s
+    ignoreError: true
+    script: |
+      rm -f "${ODPOWIEDZI:-$HOME/odpowiedzi}/lab-11.txt"
+      echo "arkusz usunięty"
+  - name: "Usuwam namespace lfs458-m11"
+    timeout: 3m
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m11 --ignore-not-found --wait=true
+  - name: "Zdejmuję etykiety i taints z node'ów"
+    timeout: 2m
+    ignoreError: true
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      $K label node lfs458-worker2 dysk- 2>/dev/null || true
+      $K taint node lfs458-worker2 gpu:NoSchedule- 2>/dev/null || true
+      echo "node'y przywrócone do stanu wyjściowego"
+      $K get nodes -o custom-columns=WEZEL:.metadata.name,TAINTS:.spec.taints --no-headers
+
+tasks:
+  - id: task-1
+    points: 3
+    description: |
+      **Przypnij Pod do konkretnego node'a.**
+
+      1. Nadaj node'owi **`lfs458-worker2`** etykietę **`dysk=ssd`**
+      2. W namespace `lfs458-m11` uruchom Pod **`na-ssd`**
+         (`nginx:1.27-alpine`) z `nodeSelector`, który wymusi trafienie
+         właśnie na ten node
+
+      ```bash
+      kubectl get nodes --show-labels
+      kubectl get pod na-ssd -n lfs458-m11 -o wide
+      ```
+    hints:
+      - "Etykietę node'owi nadaje się tak samo jak Podowi: `kubectl label node <node> klucz=wartość`."
+      - "`nodeSelector` to mapa w `spec` Poda, na tym samym poziomie co `containers`."
+      - "Nie wpisuj `nodeName` — to omija schedulera. Chodzi o to, żeby scheduler **sam** wybrał ten node, bo pasuje do warunku."
+      - "Komplet:\n\n```bash\nkubectl label node lfs458-worker2 dysk=ssd\n```\n\n```yaml\nspec:\n  nodeSelector:\n    dysk: ssd\n  containers:\n    - name: web\n      image: nginx:1.27-alpine\n```"
+    solution: |
+      ```bash
+      kubectl create namespace lfs458-m11
+      kubectl label node lfs458-worker2 dysk=ssd --overwrite
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: na-ssd
+        namespace: lfs458-m11
+      spec:
+        nodeSelector:
+          dysk: ssd
+        containers:
+          - name: web
+            image: nginx:1.27-alpine
+      EOF
+
+      kubectl get pod na-ssd -n lfs458-m11 -o wide
+      ```
+    checks:
+      - name: "node lfs458-worker2 ma etykietę dysk=ssd"
+        resource:
+          apiVersion: v1
+          kind: Node
+          name: lfs458-worker2
+        assert:
+          - path: "{.metadata.labels['dysk']}"
+            op: eq
+            value: ssd
+      - name: "Pod na-ssd używa nodeSelector, a nie nodeName"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m11
+          name: na-ssd
+        assert:
+          - path: "{.spec.nodeSelector['dysk']}"
+            op: eq
+            value: ssd
+            message: "Pod ma mieć `nodeSelector: {dysk: ssd}` — to scheduler ma wybrać node"
+      - name: "Pod wylądował na lfs458-worker2 i działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m11
+          name: na-ssd
+        assert:
+          - path: "{.spec.nodeName}"
+            op: eq
+            value: lfs458-worker2
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+
+  - id: task-2
+    points: 3
+    description: |
+      **Zobacz, jak wygląda Pod nie do zaplanowania.**
+
+      Utwórz w `lfs458-m11` Pod **`za-duzy`** (`nginx:1.27-alpine`), który
+      prosi o **`200Gi` pamięci** w `requests`. Żaden node tego nie ma,
+      więc Pod zostanie w `Pending`.
+
+      Przeczytaj zdarzenia i zwróć uwagę, jak konkretny jest komunikat:
+
+      ```bash
+      kubectl describe pod za-duzy -n lfs458-m11 | sed -n '/Events/,$p'
+      ```
+
+      Potem zapisz odczytany powód w arkuszu **`~/odpowiedzi/lab-11.txt`**
+      w `lfs458-m11`, pod kluczem `powod` — wystarczy słowo kluczowe
+      z komunikatu schedulera.
+    hints:
+      - "`resources.requests.memory: 200Gi` w specyfikacji kontenera wystarczy — nie potrzeba `limits`."
+      - "Zdarzenie ma `Reason: FailedScheduling`, a w wiadomości pojawia się fraza o niewystarczających zasobach."
+      - "Scheduler pisze `Insufficient memory` — właśnie tę frazę wpisz do ConfigMapy."
+      - "```bash\ncat >> ~/odpowiedzi/lab-11.txt <<'EOF'\npowod=Insufficient memory\nEOF\n```"
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: za-duzy
+        namespace: lfs458-m11
+      spec:
+        containers:
+          - name: web
+            image: nginx:1.27-alpine
+            resources:
+              requests:
+                memory: 200Gi
+      EOF
+
+      kubectl describe pod za-duzy -n lfs458-m11 | sed -n '/Events/,$p'
+
+      cat >> ~/odpowiedzi/lab-11.txt <<'EOF'
+      powod='Insufficient
+      EOF
+      ```
+    checks:
+      - name: "Pod za-duzy istnieje i został w stanie Pending"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m11
+          name: za-duzy
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Pending
+            message: "Pod ma zostać niezaplanowany — jeśli działa, żądanie pamięci było za małe"
+          - path: "{.spec.containers[*].resources.requests.memory}"
+            op: eq
+            value: "200Gi"
+      - name: "scheduler jawnie odmówił zaplanowania"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m11
+          name: za-duzy
+        assert:
+          - path: "{.status.conditions[?(@.type=='PodScheduled')].reason}"
+            op: eq
+            value: Unschedulable
+            message: "warunek PodScheduled powinien mieć reason=Unschedulable"
+      - name: "odczytano powód ze zdarzeń schedulera"
+        exec:
+          timeout: 40s
+          script: |
+            ZLE=""
+            V=$("$LFS458_ROOT"/scripts/odpowiedz.sh 11 powod)
+            printf '%s' "$V" | grep -qE '(?i)insufficient +memory' || ZLE="$ZLE powod"
+            [ -z "$ZLE" ] && echo "WYNIK: ok" || echo "WYNIK: brakuje lub nie zgadza sie:$ZLE"
+          stdoutMatches: "WYNIK: ok"
+
+  - id: task-3
+    points: 4
+    description: |
+      **Rozprosz repliki po node'ach.**
+
+      Utwórz Deployment **`rozproszony`** w `lfs458-m11`:
+
+      - **2 repliki**, obraz `nginx:1.27-alpine`, etykieta `app=rozproszony`
+      - reguła **`podAntiAffinity`** w wariancie `required`, która zabrania dwóm replikom
+        stanąć na **tym samym node'ie**
+
+      ```bash
+      kubectl get pods -n lfs458-m11 -l app=rozproszony -o wide
+      ```
+
+      > Dlaczego dwie, a nie trzy? Zwykłe Pody nie trafiają na node control
+      > plane (ma `taint`), więc do dyspozycji są **dwa** workery. Przy trzech
+      > replikach i regule `required` trzecia zostałaby w `Pending` na zawsze —
+      > i to jest właśnie pułapka anti-affinity typu `required`.
+    hints:
+      - "Reguła idzie do `spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution`."
+      - "`topologyKey: kubernetes.io/hostname` znaczy „ta sama maszyna”. `labelSelector` musi wskazywać te same Pody, o których mowa — czyli `app=rozproszony`."
+      - "Szkielet:\n\n```yaml\naffinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n      - labelSelector:\n          matchLabels:\n            app: rozproszony\n        topologyKey: kubernetes.io/hostname\n```"
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: rozproszony
+        namespace: lfs458-m11
+      spec:
+        replicas: 2
+        selector:
+          matchLabels:
+            app: rozproszony
+        template:
+          metadata:
+            labels:
+              app: rozproszony
+          spec:
+            affinity:
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - labelSelector:
+                      matchLabels:
+                        app: rozproszony
+                    topologyKey: kubernetes.io/hostname
+            containers:
+              - name: web
+                image: nginx:1.27-alpine
+      EOF
+
+      kubectl rollout status deployment/rozproszony -n lfs458-m11
+      kubectl get pods -n lfs458-m11 -l app=rozproszony -o wide
+      ```
+    checks:
+      - name: "Deployment rozproszony ma regułę anti-affinity"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m11
+          name: rozproszony
+        assert:
+          - path: "{.spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[*].topologyKey}"
+            op: eq
+            value: "kubernetes.io/hostname"
+            message: "reguła ma rozpraszać po node'ach — topologyKey to kubernetes.io/hostname"
+      - name: "obie repliki są gotowe"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m11
+          name: rozproszony
+        assert:
+          - path: "{.status.readyReplicas}"
+            op: eq
+            value: 2
+            message: "jeśli jedna replika wisi w Pending, reguła nie ma gdzie jej postawić"
+      - name: "repliki stoją na dwóch różnych node'ach"
+        exec:
+          timeout: 40s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            n=$($K get pods -n lfs458-m11 -l app=rozproszony \
+                  -o jsonpath='{.items[*].spec.nodeName}' \
+                | tr ' ' '\n' | grep -v '^$' | sort -u | wc -l | tr -d ' ')
+            echo "roznych-nodow=$n"
+          stdoutMatches: "roznych-nodow=2"
+
+  - id: task-4
+    points: 4
+    description: |
+      **Zarezerwuj node dla wybranych Podów.**
+
+      1. Nałóż na node **`lfs458-worker2`** taint **`gpu=true:NoSchedule`**
+      2. Uruchom w `lfs458-m11` Pod **`z-gpu`** (`nginx:1.27-alpine`), który
+         **toleruje** ten taint **i** trafia właśnie na ten node
+
+      Pamiętaj: `toleration` to tylko **zgoda**. Żeby Pod naprawdę tam wylądował,
+      potrzebuje jeszcze czegoś, co go tam **przyciągnie**.
+
+      ```bash
+      kubectl describe node lfs458-worker2 | grep -i taint
+      kubectl get pod z-gpu -n lfs458-m11 -o wide
+      ```
+    hints:
+      - "`kubectl taint node lfs458-worker2 gpu=true:NoSchedule`. Zdejmuje się tym samym poleceniem z minusem na końcu."
+      - "Wpis w Podzie: `tolerations: [{key: gpu, operator: Equal, value: \"true\", effect: NoSchedule}]`."
+      - "Sam `toleration` nie wystarczy — Pod może wtedy wylądować gdziekolwiek. Dołóż `nodeSelector` z etykietą `dysk=ssd`, nadaną temu node'owi w zadaniu 1."
+      - "Komplet:\n\n```yaml\nspec:\n  nodeSelector:\n    dysk: ssd\n  tolerations:\n    - key: gpu\n      operator: Equal\n      value: \"true\"\n      effect: NoSchedule\n```"
+    solution: |
+      ```bash
+      kubectl taint node lfs458-worker2 gpu=true:NoSchedule --overwrite
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: z-gpu
+        namespace: lfs458-m11
+      spec:
+        nodeSelector:
+          dysk: ssd
+        tolerations:
+          - key: gpu
+            operator: Equal
+            value: "true"
+            effect: NoSchedule
+        containers:
+          - name: web
+            image: nginx:1.27-alpine
+      EOF
+
+      kubectl get pod z-gpu -n lfs458-m11 -o wide
+      ```
+    checks:
+      - name: "node lfs458-worker2 ma taint gpu=true:NoSchedule"
+        resource:
+          apiVersion: v1
+          kind: Node
+          name: lfs458-worker2
+        assert:
+          - path: "{.spec.taints[*].key}"
+            op: eq
+            value: gpu
+            quantifier: any
+            message: "`kubectl taint node lfs458-worker2 gpu=true:NoSchedule`"
+          - path: "{.spec.taints[?(@.key=='gpu')].effect}"
+            op: eq
+            value: NoSchedule
+      - name: "Pod z-gpu toleruje ten taint"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m11
+          name: z-gpu
+        assert:
+          - path: "{.spec.tolerations[*].key}"
+            op: eq
+            value: gpu
+            quantifier: any
+            message: "bez `toleration` Pod nie zostanie wpuszczony na ten node"
+      - name: "Pod z-gpu działa na node'ie z taintem"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m11
+          name: z-gpu
+        assert:
+          - path: "{.spec.nodeName}"
+            op: eq
+            value: lfs458-worker2
+            message: "`toleration` to tylko zgoda — dołóż nodeSelector, żeby Pod tam trafił"
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+
+  - id: task-5
+    points: 3
+    optional: true
+    description: |
+      **Preferencja, która nie blokuje.**
+
+      Zadanie dodatkowe. Utwórz Pod **`preferowany`** w `lfs458-m11`
+      (`nginx:1.27-alpine`) z regułą `nodeAffinity`, która **preferuje**
+      node z etykietą `dysk=nvme` — a takiego node'a w klastrze **nie ma**.
+
+      Użyj `preferredDuringSchedulingIgnoredDuringExecution` z wagą `50`.
+
+      Pod mimo to ma wystartować — bo preferencja tylko dodaje punkty,
+      a nie stawia warunku. Porównaj to z zadaniem 2, gdzie `required`
+      zatrzymał Poda na zawsze.
+    hints:
+      - "Struktura: `spec.affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution` to **lista**, a każdy element ma `weight` i `preference`."
+      - "`preference` zawiera `matchExpressions` — tak jak przy `required`, ale w innym miejscu drzewa."
+      - "```yaml\naffinity:\n  nodeAffinity:\n    preferredDuringSchedulingIgnoredDuringExecution:\n      - weight: 50\n        preference:\n          matchExpressions:\n            - key: dysk\n              operator: In\n              values: [nvme]\n```"
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: preferowany
+        namespace: lfs458-m11
+      spec:
+        affinity:
+          nodeAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 50
+                preference:
+                  matchExpressions:
+                    - key: dysk
+                      operator: In
+                      values: [nvme]
+        containers:
+          - name: web
+            image: nginx:1.27-alpine
+      EOF
+
+      kubectl get pod preferowany -n lfs458-m11 -o wide
+      ```
+    checks:
+      - name: "Pod preferowany ma `preferred`, a nie `required`"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m11
+          name: preferowany
+        assert:
+          - path: "{.spec.affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution[*].weight}"
+            op: eq
+            value: 50
+            message: "użyj `preferredDuringSchedulingIgnoredDuringExecution` z wagą 50"
+          - path: "{.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution}"
+            op: notExists
+            message: "reguła `required` zatrzymałaby Poda w Pending — o to właśnie chodzi w tym porównaniu"
+      - name: "mimo niespełnionej preferencji Pod działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m11
+          name: preferowany
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+            message: "preferencja nie blokuje planowania — Pod powinien wystartować na dowolnym node'ie"
+
+  - id: task-6
+    points: 2
+    description: |
+      **Zapytaj klaster, gdzie co może stanąć.**
+
+      Trzy pytania o node'y i o to, co je chroni przed workloadami.
+      Odpowiedzi czytasz wprost z klastra.
+    quiz:
+      pytania:
+        - pytanie: |
+            Jaki `taint` nosi control plane node tego klastra?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get node lfs458-control-plane \
+                -o jsonpath='{.spec.taints[0].key}'
+          mylne: ["node-role.kubernetes.io/master",
+                  "node.kubernetes.io/unschedulable",
+                  "node.kubernetes.io/not-ready"]
+          wskazowka: "kubectl describe node lfs458-control-plane | grep -i taint"
+
+        - pytanie: |
+            Jaki **efekt** ma ten `taint`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get node lfs458-control-plane \
+                -o jsonpath='{.spec.taints[0].effect}'
+          mylne: ["NoExecute", "PreferNoSchedule", "NoAdmission"]
+          wskazowka: "ten sam `describe` — efekt stoi po dwukropku"
+
+        - pytanie: |
+            Ile node'ów w tym klastrze przyjmie zwykłego Poda **bez** żadnego `toleration`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get nodes -o json \
+                | python3 -c 'import json,sys; print(sum(1 for n in json.load(sys.stdin)["items"] if not n["spec"].get("taints")))'
+          mylne: ["1", "3", "0"]
+          wskazowka: "policz node'y bez taintów: `kubectl get nodes -o custom-columns=W:.metadata.name,T:.spec.taints`"

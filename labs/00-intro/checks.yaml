@@ -1,0 +1,12 @@
+module: "00"
+title: "Zanim zaczniemy — czego potrzebujesz"
+day: 1
+kind: intro
+
+intro: |
+  Ta strona jest jedyną w całym szkoleniu bez zadań do zaliczenia. Sprawdź na
+  niej, czy Twoje stanowisko ma wszystko, czego wymagają kolejne moduły —
+  **zanim** zacznie się pierwszy wykład.
+
+  Tabele niżej wypełniają się na bieżąco tym, co labctl znajduje na Twoim
+  komputerze. Zielone = gotowe, czerwone = do doinstalowania.

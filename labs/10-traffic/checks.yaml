@@ -1,0 +1,581 @@
+module: "10"
+title: "Advanced Traffic Management — Ingress i Gateway API"
+chapter: 10
+chapterTitle: "Advanced Traffic Management"
+day: 3
+environment: kind-basic
+
+intro: |
+  Wpuścisz ruch do klastra dwiema drogami: starszym **Ingressem** i nowszym
+  **Gateway API**. Ten sam routing, dwa API — po to, żeby zobaczyć na własne
+  oczy, czym się różnią.
+
+  Kubernetes nie ma w standardzie ani jednego, ani drugiego. W tym środowisku
+  oba kontrolery stoją już w klastrze: Ingress obsługuje `ingress-nginx`,
+  a Gateway API — `cloud-provider-kind`, który stawia się razem ze środowiskiem
+  (`labctl env up kind-basic`). Sprawdź, co masz:
+
+  ```bash
+  kubectl get ingressclass
+  kubectl get gatewayclass
+  ```
+
+  Adresy, pod którymi sprawdzasz efekty:
+
+  | Co | Adres |
+  |---|---|
+  | Ingress (HTTP) | `http://localhost:8080` |
+  | Ingress (HTTPS) | `https://localhost:8443` |
+  | Gateway API | adres z `status` bramy — odczytasz go w zadaniu 4 |
+
+  > Ingress wisi na stałym porcie hosta, bo kontroler siedzi na node'ie control
+  > plane z mapowaniem portów. Brama Gateway API dostaje **prawdziwy
+  > `EXTERNAL-IP`** z `cloud-provider-kind` — na Linuksie osiągalny wprost
+  > z hosta. To różnica, którą warto zobaczyć: pierwszy to obejście, drugi to
+  > zachowanie takie jak u dostawcy chmurowego.
+
+setup:
+  # Nie instalujemy tu nic: CRD Gateway API i kontroler dostarcza
+  # cloud-provider-kind, uruchamiany razem ze środowiskiem. Ten krok tylko
+  # upewnia się, że są — bez nich zadania 4 i 5 nie mają na czym stanąć.
+  - name: "Sprawdzam, czy klaster ma Gateway API"
+    timeout: 2m
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      if ! $K get crd gateways.gateway.networking.k8s.io >/dev/null 2>&1; then
+        echo "BRAK: w klastrze nie ma CRD Gateway API."
+        echo "Dostarcza je cloud-provider-kind. Postaw środowisko od nowa:"
+        echo "  labctl env down kind-basic && labctl env up kind-basic"
+        exit 1
+      fi
+      KLASA=$($K get gatewayclass -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+      if [ -z "$KLASA" ]; then
+        echo "BRAK: nie ma żadnej GatewayClass — kontroler nie działa."
+        echo "Sprawdź, czy kontener cloud-provider-kind żyje:"
+        echo "  docker ps --filter name=lfs458-cloud-provider"
+        exit 1
+      fi
+      echo "Gateway API gotowe. Klasa do użycia w zadaniu 4: ${KLASA}"
+      $K get gatewayclass
+
+cleanup:
+  - name: "Usuwam namespace lfs458-m10"
+    timeout: 5m
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m10 --ignore-not-found --wait=true
+
+tasks:
+  - id: task-1
+    points: 4
+    description: |
+      **Dwie aplikacje za jednym wejściem.**
+
+      W namespace `lfs458-m10` uruchom dwie aplikacje i wystaw je Ingressem
+      rozdzielającym ruch **po nazwie hosta**:
+
+      | Aplikacja | Obraz | Odpowiada tekstem | Host |
+      |---|---|---|---|
+      | `sklep` | `hashicorp/http-echo:1.0` | `to-jest-sklep` | `sklep.lfs458.local` |
+      | `blog` | `hashicorp/http-echo:1.0` | `to-jest-blog` | `blog.lfs458.local` |
+
+      Każda potrzebuje Deploymentu i Service'u na porcie **5678**.
+      Ingress nazwij **`firma`**, klasa `nginx`.
+
+      Sprawdzenie z hosta — bez zmieniania `/etc/hosts`, wystarczy nagłówek:
+
+      ```bash
+      curl -s -H 'Host: sklep.lfs458.local' http://localhost:8080/
+      curl -s -H 'Host: blog.lfs458.local'  http://localhost:8080/
+      ```
+    hints:
+      - "`http-echo` uruchamiasz z argumentami: `args: [\"-text=to-jest-sklep\", \"-listen=:5678\"]`."
+      - "Deployment i Service najszybciej: `kubectl create deployment sklep --image=hashicorp/http-echo:1.0 -n lfs458-m10 -- /http-echo -text=to-jest-sklep -listen=:5678`, potem `kubectl expose deployment sklep --port=5678 -n lfs458-m10`."
+      - "W Ingressie każdy host to osobny element listy `spec.rules`, a `ingressClassName: nginx` wskazuje kontroler, który ma go obsłużyć."
+      - "Szkielet reguły:\n\n```yaml\nspec:\n  ingressClassName: nginx\n  rules:\n    - host: sklep.lfs458.local\n      http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: sklep\n                port:\n                  number: 5678\n```"
+    solution: |
+      ```bash
+      kubectl create namespace lfs458-m10
+
+      for a in sklep blog; do
+        kubectl create deployment $a --image=hashicorp/http-echo:1.0 -n lfs458-m10 \
+          -- /http-echo -text=to-jest-$a -listen=:5678
+        kubectl expose deployment $a --port=5678 -n lfs458-m10
+      done
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: firma
+        namespace: lfs458-m10
+      spec:
+        ingressClassName: nginx
+        rules:
+          - host: sklep.lfs458.local
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend: {service: {name: sklep, port: {number: 5678}}}
+          - host: blog.lfs458.local
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend: {service: {name: blog, port: {number: 5678}}}
+      EOF
+      ```
+    checks:
+      - name: "obie aplikacje działają i mają Service'y"
+        resource:
+          apiVersion: v1
+          kind: Service
+          namespace: lfs458-m10
+          labelSelector: "app in (sklep,blog)"
+        assert:
+          - path: "{.items[*].spec.ports[*].port}"
+            op: eq
+            value: 5678
+            quantifier: all
+            count:
+              op: eq
+              value: 2
+            message: "potrzebne są dwa Service'y na porcie 5678 — dla `sklep` i dla `blog`"
+      - name: "Ingress firma ma reguły dla obu hostów"
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          namespace: lfs458-m10
+          name: firma
+        assert:
+          - path: "{.spec.ingressClassName}"
+            op: eq
+            value: nginx
+            message: "bez `ingressClassName` żaden kontroler nie weźmie tego Ingressa"
+          - path: "{.spec.rules[*].host}"
+            op: oneOf
+            value: "sklep.lfs458.local, blog.lfs458.local"
+            quantifier: all
+            count:
+              op: eq
+              value: 2
+      - name: "sklep odpowiada przez Ingress"
+        http:
+          url: "http://localhost:8080/"
+          host: "sklep.lfs458.local"
+          expectStatus: 200
+          bodyMatches: "to-jest-sklep"
+          timeout: 15s
+      - name: "blog odpowiada przez ten sam Ingress"
+        http:
+          url: "http://localhost:8080/"
+          host: "blog.lfs458.local"
+          expectStatus: 200
+          bodyMatches: "to-jest-blog"
+          timeout: 15s
+
+  - id: task-2
+    points: 4
+    description: |
+      **Rozdziel ruch po ścieżce, nie po hoście.**
+
+      Utwórz **drugi** Ingress, **`sciezki`**, dla hosta `firma.lfs458.local`:
+
+      | Ścieżka | Ma trafić do |
+      |---|---|
+      | `/sklep` | usługi `sklep` |
+      | `/blog` | usługi `blog` |
+
+      Aplikacje odpowiadają na `/`, a nie na `/sklep`, więc potrzebujesz
+      **przepisania ścieżki**. W ingress-nginx robi to adnotacja
+      `nginx.ingress.kubernetes.io/rewrite-target`.
+
+      ```bash
+      curl -s -H 'Host: firma.lfs458.local' http://localhost:8080/sklep
+      curl -s -H 'Host: firma.lfs458.local' http://localhost:8080/blog
+      ```
+
+      > Bez przepisania dostaniesz `404` — aplikacja zobaczy ścieżkę `/sklep`,
+      > której nie zna. To najczęstsza pułapka Ingressa.
+    hints:
+      - "Adnotacja `nginx.ingress.kubernetes.io/rewrite-target: /$2` w połączeniu ze ścieżką w formie wyrażenia: `path: /sklep(/|$)(.*)`."
+      - "Przy wyrażeniach regularnych `pathType` musi być `ImplementationSpecific` — `Prefix` traktuje ścieżkę dosłownie."
+      - "Obie ścieżki idą w jednej regule, pod tym samym `host:`, jako dwa elementy listy `paths`."
+      - "Komplet adnotacji i ścieżek:\n\n```yaml\nmetadata:\n  annotations:\n    nginx.ingress.kubernetes.io/rewrite-target: /$2\nspec:\n  rules:\n    - host: firma.lfs458.local\n      http:\n        paths:\n          - path: /sklep(/|$)(.*)\n            pathType: ImplementationSpecific\n            backend: {service: {name: sklep, port: {number: 5678}}}\n```"
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: sciezki
+        namespace: lfs458-m10
+        annotations:
+          nginx.ingress.kubernetes.io/rewrite-target: /$2
+      spec:
+        ingressClassName: nginx
+        rules:
+          - host: firma.lfs458.local
+            http:
+              paths:
+                - path: /sklep(/|$)(.*)
+                  pathType: ImplementationSpecific
+                  backend: {service: {name: sklep, port: {number: 5678}}}
+                - path: /blog(/|$)(.*)
+                  pathType: ImplementationSpecific
+                  backend: {service: {name: blog, port: {number: 5678}}}
+      EOF
+      ```
+    checks:
+      - name: "Ingress sciezki ma adnotację przepisującą ścieżkę"
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          namespace: lfs458-m10
+          name: sciezki
+        assert:
+          - path: "{.metadata.annotations['nginx\\.ingress\\.kubernetes\\.io/rewrite-target']}"
+            op: exists
+            message: "bez `rewrite-target` aplikacja dostanie ścieżkę /sklep i zwróci 404"
+          - path: "{.spec.rules[*].host}"
+            op: eq
+            value: "firma.lfs458.local"
+      - name: "ścieżka /sklep trafia do właściwej usługi"
+        http:
+          url: "http://localhost:8080/sklep"
+          host: "firma.lfs458.local"
+          expectStatus: 200
+          bodyMatches: "to-jest-sklep"
+          timeout: 15s
+      - name: "ścieżka /blog trafia do właściwej usługi"
+        http:
+          url: "http://localhost:8080/blog"
+          host: "firma.lfs458.local"
+          expectStatus: 200
+          bodyMatches: "to-jest-blog"
+          timeout: 15s
+
+  - id: task-3
+    points: 4
+    description: |
+      **Wystaw sklep po HTTPS.**
+
+      Zrób to **osobnym** Ingressem, na osobnym hoście — dzięki temu ruch
+      po zwykłym HTTP z zadania 1 zostanie nietknięty.
+
+      1. Wygeneruj certyfikat samopodpisany dla `bezpieczny.lfs458.local`
+      2. Zapisz go w Secretcie **`sklep-tls`** typu **`kubernetes.io/tls`**
+         w namespace `lfs458-m10`
+      3. Utwórz Ingress **`bezpieczny`** dla hosta `bezpieczny.lfs458.local`,
+         kierujący `/` do usługi `sklep`, z sekcją `tls` wskazującą ten Secret
+
+      ```bash
+      openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout /tmp/tls.key -out /tmp/tls.crt \
+        -subj "/CN=bezpieczny.lfs458.local" \
+        -addext "subjectAltName=DNS:bezpieczny.lfs458.local"
+
+      curl -sk -H 'Host: bezpieczny.lfs458.local' https://localhost:8443/
+      ```
+
+      > Certyfikat jest samopodpisany, więc `curl` potrzebuje `-k`.
+      > Na produkcji rolę tę pełni **cert-manager** z Let's Encrypt.
+      >
+      > Zwróć uwagę na efekt uboczny: po włączeniu TLS ingress-nginx zaczyna
+      > przekierowywać zwykły HTTP na HTTPS (kod `308`) dla tego hosta.
+      > Dlatego host jest osobny — gdyby był ten sam, zepsułbyś zadanie 1.
+    hints:
+      - "Secret typu TLS ma własne polecenie: `kubectl create secret tls sklep-tls --cert=/tmp/tls.crt --key=/tmp/tls.key -n lfs458-m10`."
+      - "Sekcja `tls` jest w `spec` Ingressa, na tym samym poziomie co `rules`:\n\n```yaml\nspec:\n  tls:\n    - hosts: [bezpieczny.lfs458.local]\n      secretName: sklep-tls\n```"
+      - "Secret musi leżeć w **tym samym namespace** co Ingress — kontroler nie sięgnie po niego z innego."
+      - "Jeśli dostajesz certyfikat `Kubernetes Ingress Controller Fake Certificate`, znaczy to, że kontroler nie znalazł Twojego Secreta. Sprawdź nazwę i namespace."
+    solution: |
+      ```bash
+      openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout /tmp/tls.key -out /tmp/tls.crt \
+        -subj "/CN=bezpieczny.lfs458.local" \
+        -addext "subjectAltName=DNS:bezpieczny.lfs458.local"
+
+      kubectl create secret tls sklep-tls \
+        --cert=/tmp/tls.crt --key=/tmp/tls.key -n lfs458-m10
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: bezpieczny
+        namespace: lfs458-m10
+      spec:
+        ingressClassName: nginx
+        tls:
+          - hosts: [bezpieczny.lfs458.local]
+            secretName: sklep-tls
+        rules:
+          - host: bezpieczny.lfs458.local
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend: {service: {name: sklep, port: {number: 5678}}}
+      EOF
+
+      curl -sk -H 'Host: bezpieczny.lfs458.local' https://localhost:8443/
+      ```
+    checks:
+      - name: "Secret sklep-tls jest typu kubernetes.io/tls"
+        resource:
+          apiVersion: v1
+          kind: Secret
+          namespace: lfs458-m10
+          name: sklep-tls
+        assert:
+          - path: "{.type}"
+            op: eq
+            value: "kubernetes.io/tls"
+            message: "użyj `kubectl create secret tls` — zwykły Secret generic nie zadziała"
+          - path: "{.data['tls\\.crt']}"
+            op: exists
+          - path: "{.data['tls\\.key']}"
+            op: exists
+      - name: "Ingress bezpieczny ma skonfigurowane TLS"
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          namespace: lfs458-m10
+          name: bezpieczny
+        assert:
+          - path: "{.spec.tls[*].secretName}"
+            op: eq
+            value: sklep-tls
+          - path: "{.spec.tls[*].hosts[*]}"
+            op: eq
+            value: "bezpieczny.lfs458.local"
+      - name: "sklep odpowiada po HTTPS"
+        http:
+          url: "https://localhost:8443/"
+          host: "bezpieczny.lfs458.local"
+          expectStatus: 200
+          bodyMatches: "to-jest-sklep"
+          insecure: true
+          timeout: 15s
+      - name: "zwykly HTTP na tym hoscie jest przekierowywany na HTTPS"
+        http:
+          url: "http://localhost:8080/"
+          host: "bezpieczny.lfs458.local"
+          expectStatus: 308
+          timeout: 15s
+
+  - id: task-4
+    points: 5
+    description: |
+      **Ten sam routing, tym razem przez Gateway API.**
+
+      Zbuduj drogę do sklepu jeszcze raz — nowszym API. Potrzebujesz dwóch
+      obiektów w `lfs458-m10`:
+
+      1. **`Gateway`** o nazwie `brama`:
+         - `gatewayClassName` — nazwa klasy, którą ma już klaster
+           (sprawdź: `kubectl get gatewayclass`)
+         - jeden listener o nazwie **`http`**, protokół `HTTP`, port **80**
+         - `allowedRoutes.namespaces.from: Same`
+      2. **`HTTPRoute`** o nazwie `sklep`:
+         - `parentRefs` wskazujący na `brama`
+         - `hostnames: ["sklep.lfs458.local"]`
+         - reguła kierująca `/` do usługi `sklep` na porcie `5678`
+
+      Adresu bramy nie zgadujesz — brama sama go zgłasza w swoim `status`:
+
+      ```bash
+      kubectl get gateway,httproute -n lfs458-m10
+      BRAMA=$(kubectl get gateway brama -n lfs458-m10 \
+        -o jsonpath='{.status.addresses[0].value}')
+      curl -s -H 'Host: sklep.lfs458.local' "http://${BRAMA}/"
+      ```
+
+      > Tu widać różnicę wobec Ingressa: brama dostaje **własny adres**,
+      > a nie port na node'ie. Tak samo zachowuje się u dostawcy chmurowego —
+      > z tą różnicą, że tam adres jest publiczny.
+    hints:
+      - "`kubectl get gatewayclass` poda nazwę klasy. Kolumna ACCEPTED musi pokazywać `True`."
+      - "Struktura Gateway: `spec.gatewayClassName` oraz lista `spec.listeners`, gdzie każdy ma `name`, `protocol`, `port` i `allowedRoutes`."
+      - "HTTPRoute wiąże się z bramą przez `parentRefs: [{name: brama}]`. Backend podaje się jako `backendRefs: [{name: sklep, port: 5678}]`."
+      - "Sprawdź, czy brama wstała: `kubectl get gateway brama -n lfs458-m10` — kolumna PROGRAMMED ma być `True`. Jeśli jest `False`, kontroler jeszcze tworzy Pody bramy."
+      - "Komplet:\n\n```yaml\napiVersion: gateway.networking.k8s.io/v1\nkind: Gateway\nmetadata: {name: brama, namespace: lfs458-m10}\nspec:\n  gatewayClassName: eg\n  listeners:\n    - name: http\n      protocol: HTTP\n      port: 80\n      allowedRoutes: {namespaces: {from: Same}}\n---\napiVersion: gateway.networking.k8s.io/v1\nkind: HTTPRoute\nmetadata: {name: sklep, namespace: lfs458-m10}\nspec:\n  parentRefs: [{name: brama}]\n  hostnames: [\"sklep.lfs458.local\"]\n  rules:\n    - matches: [{path: {type: PathPrefix, value: /}}]\n      backendRefs: [{name: sklep, port: 5678}]\n```"
+    solution: |
+      ```bash
+      GWCLASS=$(kubectl get gatewayclass -o jsonpath='{.items[0].metadata.name}')
+
+      cat <<EOF | kubectl apply -f -
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: Gateway
+      metadata:
+        name: brama
+        namespace: lfs458-m10
+      spec:
+        gatewayClassName: ${GWCLASS}
+        listeners:
+          - name: http
+            protocol: HTTP
+            port: 80
+            allowedRoutes:
+              namespaces:
+                from: Same
+      ---
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: sklep
+        namespace: lfs458-m10
+      spec:
+        parentRefs:
+          - name: brama
+        hostnames: ["sklep.lfs458.local"]
+        rules:
+          - matches:
+              - path: {type: PathPrefix, value: /}
+            backendRefs:
+              - name: sklep
+                port: 5678
+      EOF
+
+      kubectl wait --for=condition=Programmed gateway/brama -n lfs458-m10 --timeout=180s
+
+      BRAMA=$(kubectl get gateway brama -n lfs458-m10 -o jsonpath='{.status.addresses[0].value}')
+      curl -s -H 'Host: sklep.lfs458.local' "http://${BRAMA}/"
+      ```
+    checks:
+      - name: "Gateway brama jest skonfigurowana i gotowa"
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: Gateway
+          namespace: lfs458-m10
+          name: brama
+        assert:
+          - path: "{.spec.listeners[*].name}"
+            op: eq
+            value: http
+            message: "listener ma nazywać się `http` — tak go opisuje zadanie"
+          - path: "{.spec.listeners[*].port}"
+            op: eq
+            value: 80
+          - path: "{.status.conditions[?(@.type=='Programmed')].status}"
+            op: eq
+            value: "True"
+            message: "brama jeszcze nie wstała — kontroler tworzy dla niej Pody, poczekaj kilkadziesiąt sekund"
+      - name: "HTTPRoute wskazuje na bramę i na usługę sklep"
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          namespace: lfs458-m10
+          name: sklep
+        assert:
+          - path: "{.spec.parentRefs[*].name}"
+            op: eq
+            value: brama
+          - path: "{.spec.hostnames[*]}"
+            op: eq
+            value: "sklep.lfs458.local"
+          - path: "{.spec.rules[*].backendRefs[*].name}"
+            op: eq
+            value: sklep
+            quantifier: any
+      - name: "trasa została przyjęta przez bramę"
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          namespace: lfs458-m10
+          name: sklep
+        assert:
+          - path: "{.status.parents[*].conditions[?(@.type=='Accepted')].status}"
+            op: eq
+            value: "True"
+            quantifier: any
+            message: "brama odrzuciła trasę — sprawdź `kubectl describe httproute sklep -n lfs458-m10`"
+      # Adres bramy przydziela kontroler, więc nie da się go wpisać na sztywno —
+      # odczytujemy go ze statusu obiektu, dokładnie tak, jak robi to kursant.
+      - name: "sklep odpowiada przez Gateway API"
+        exec:
+          timeout: 60s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            BRAMA=$($K get gateway brama -n lfs458-m10 \
+              -o jsonpath='{.status.addresses[0].value}' 2>/dev/null)
+            if [ -z "$BRAMA" ]; then
+              echo "brama nie ma jeszcze adresu w status.addresses"
+              exit 0
+            fi
+            curl -s --max-time 15 -H 'Host: sklep.lfs458.local' "http://${BRAMA}/"
+          stdoutMatches: "to-jest-sklep"
+
+  - id: task-5
+    points: 3
+    optional: true
+    description: |
+      **Podziel ruch między dwie wersje.**
+
+      Zadanie dodatkowe pokazujące, co Gateway API daje ponad Ingress:
+      `canary deployment` **bez żadnej adnotacji**.
+
+      1. Uruchom trzecią aplikację **`sklep-v2`** (`hashicorp/http-echo:1.0`,
+         tekst `to-jest-sklep-v2`, port 5678) razem z jej Service'em
+      2. Zmień HTTPRoute `sklep` tak, żeby kierowała **90 %** ruchu do `sklep`
+         i **10 %** do `sklep-v2`
+
+      ```bash
+      BRAMA=$(kubectl get gateway brama -n lfs458-m10 \
+        -o jsonpath='{.status.addresses[0].value}')
+
+      for i in $(seq 1 20); do
+        curl -s -H 'Host: sklep.lfs458.local' "http://${BRAMA}/"
+      done | sort | uniq -c
+      ```
+    hints:
+      - "`backendRefs` to lista — wystarczy dodać drugi wpis i nadać obu pole `weight`."
+      - "Wagi nie muszą sumować się do 100; kontroler liczy proporcje. `90` i `10` są po prostu czytelne."
+      - "```yaml\nbackendRefs:\n  - {name: sklep, port: 5678, weight: 90}\n  - {name: sklep-v2, port: 5678, weight: 10}\n```"
+    solution: |
+      ```bash
+      kubectl create deployment sklep-v2 --image=hashicorp/http-echo:1.0 -n lfs458-m10 \
+        -- /http-echo -text=to-jest-sklep-v2 -listen=:5678
+      kubectl expose deployment sklep-v2 --port=5678 -n lfs458-m10
+
+      kubectl patch httproute sklep -n lfs458-m10 --type=merge -p '{
+        "spec": {"rules": [{
+          "matches": [{"path": {"type": "PathPrefix", "value": "/"}}],
+          "backendRefs": [
+            {"name": "sklep",    "port": 5678, "weight": 90},
+            {"name": "sklep-v2", "port": 5678, "weight": 10}
+          ]
+        }]}
+      }'
+      ```
+    checks:
+      - name: "usługa sklep-v2 działa"
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: lfs458-m10
+          name: sklep-v2
+        assert:
+          - path: "{.status.readyReplicas}"
+            op: gte
+            value: 1
+      - name: "HTTPRoute dzieli ruch między dwa backendy z wagami"
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          namespace: lfs458-m10
+          name: sklep
+        assert:
+          - path: "{.spec.rules[*].backendRefs[*].name}"
+            count:
+              op: eq
+              value: 2
+            message: "reguła ma mieć dwa backendy: `sklep` i `sklep-v2`"
+          - path: "{.spec.rules[*].backendRefs[*].weight}"
+            op: exists
+            quantifier: all
+            count:
+              op: eq
+              value: 2
+            message: "oba backendy potrzebują pola `weight` — bez niego ruch dzieli się po równo"
