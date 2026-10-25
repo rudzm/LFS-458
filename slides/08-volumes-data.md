@@ -274,6 +274,12 @@ obsługuje `RWX`.
 
 ---
 
+<!-- _class: sekcja -->
+
+# 4. Rook
+
+---
+
 # Rook — pamięć trwała z klastra
 
 <div data-marpit-fragment>
@@ -396,6 +402,80 @@ kubectl exec -n lfs458-m08 konfiguracja -- ls -l /etc/ustawienia
 
 > Różnica praktyczna: jeśli aplikacja ma przeładowywać konfigurację bez
 > restartu — montuj jako wolumen. Jeśli nie — zmienne są prostsze.
+
+</div>
+
+---
+
+# Downward API — Pod mówi aplikacji, kim jest
+
+<div class="kolumny">
+<div>
+
+<div data-marpit-fragment>
+
+### Zmienne
+
+</div>
+
+<div data-marpit-fragment>
+
+```yaml
+env:
+  - name: MOJ_POD
+    valueFrom:
+      fieldRef: {fieldPath: metadata.name}
+  - name: MOJ_NODE
+    valueFrom:
+      fieldRef: {fieldPath: spec.nodeName}
+  - name: MOJ_IP
+    valueFrom:
+      fieldRef: {fieldPath: status.podIP}
+```
+
+</div>
+
+</div>
+<div>
+
+<div data-marpit-fragment>
+
+### Wolumen
+
+</div>
+
+<div data-marpit-fragment>
+
+```yaml
+volumes:
+  - name: info
+    downwardAPI:
+      items:
+        - path: etykiety
+          fieldRef:
+            fieldPath: metadata.labels
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+```text
+$ cat /etc/info/etykiety
+app="sklep"
+wersja="1"
+```
+
+</div>
+
+</div>
+</div>
+
+<div data-marpit-fragment>
+
+> Zmienna dostaje wartość **raz, przy starcie** kontenera. Plik z wolumenu
+> nadąża za zmianą: po `kubectl label pod … wersja=2 --overwrite` po kilku
+> sekundach widać `wersja="2"`, a zmienna nadal mówi `1`.
 
 </div>
 

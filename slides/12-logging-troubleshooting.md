@@ -35,7 +35,7 @@ Metoda zamiast zgadywania
 
 <!-- _class: sekcja -->
 
-# 1. Metoda
+# 1 i 2. Przegląd i ścieżka diagnozy
 
 ---
 
@@ -213,7 +213,7 @@ Pending / FailedScheduling
 
 <!-- _class: sekcja -->
 
-# 4. Monitoring i logi
+# 4. Monitoring
 
 ---
 
@@ -270,6 +270,47 @@ kubectl get apiservices | grep metrics        # v1beta1.metrics.k8s.io
 
 ---
 
+<!-- _class: sekcja -->
+
+# 5. Pluginy
+
+---
+
+# Co warto mieć pod ręką
+
+<div data-marpit-fragment>
+
+```bash
+kubectl debug -it <pod> --image=busybox:1.36 --target=<kontener>
+kubectl debug node/lfs458-worker -it --image=busybox:1.36
+kubectl run tymczasowy --rm -it --image=busybox:1.36 --restart=Never -- sh
+```
+
+</div>
+
+* `kubectl debug` dokłada **kontener efemeryczny** do działającego Poda —
+  ratuje przy obrazach distroless, w których nie ma powłoki
+* `kubectl debug node/...` daje dostęp do systemu plików node'a
+
+<div data-marpit-fragment>
+
+| Plugin (`krew`) | Do czego |
+|---|---|
+| `kubectl krew install ns ctx` | szybkie przełączanie namespace'u i kontekstu |
+| `stern` | logi z wielu Podów naraz |
+| `kubectl tree` | drzewo `ownerReferences` |
+| `kubectl neat` | manifest bez pól dopisanych przez serwer |
+
+</div>
+
+---
+
+<!-- _class: sekcja -->
+
+# 6. Logi
+
+---
+
 # Gdzie naprawdę są logi
 
 <div data-marpit-fragment>
@@ -305,42 +346,7 @@ kubectl logs -l app=sklep --tail=50 -f     # po etykiecie, na żywo
 
 <!-- _class: sekcja -->
 
-# 5. Narzędzia
-
----
-
-# Co warto mieć pod ręką
-
-<div data-marpit-fragment>
-
-```bash
-kubectl debug -it <pod> --image=busybox:1.36 --target=<kontener>
-kubectl debug node/lfs458-worker -it --image=busybox:1.36
-kubectl run tymczasowy --rm -it --image=busybox:1.36 --restart=Never -- sh
-```
-
-</div>
-
-* `kubectl debug` dokłada **kontener efemeryczny** do działającego Poda —
-  ratuje przy obrazach distroless, w których nie ma powłoki
-* `kubectl debug node/...` daje dostęp do systemu plików node'a
-
-<div data-marpit-fragment>
-
-| Plugin (`krew`) | Do czego |
-|---|---|
-| `kubectl krew install ns ctx` | szybkie przełączanie namespace'u i kontekstu |
-| `stern` | logi z wielu Podów naraz |
-| `kubectl tree` | drzewo `ownerReferences` |
-| `kubectl neat` | manifest bez pól dopisanych przez serwer |
-
-</div>
-
----
-
-<!-- _class: sekcja -->
-
-# 6. Gdy pada control plane
+# 7. Gdy pada control plane
 
 ---
 

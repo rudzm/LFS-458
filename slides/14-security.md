@@ -102,6 +102,12 @@ i to jest świadoma decyzja projektowa
 
 ---
 
+<!-- _class: sekcja -->
+
+# 3. Uwierzytelnianie i autoryzacja
+
+---
+
 # Kim jesteś
 
 <div data-marpit-fragment>

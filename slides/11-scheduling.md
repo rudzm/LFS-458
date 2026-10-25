@@ -21,9 +21,9 @@ i jak na tę decyzję wpłynąć
 
 <div data-marpit-fragment>
 
-1. **Przegląd** — dwie fazy decyzji, `requests` kontra `limits`
-2. **Klasy QoS** — co z `requests` i `limits` wynika na node'ie
-3. **Przypinanie Poda** — `nodeName`, `nodeSelector`
+1. **Przegląd** — dwie fazy decyzji
+2. **Ustawienia schedulera** — czym można pokręcić
+3. **Specyfikacja Poda** — `nodeName`, `nodeSelector`, zasoby i klasy QoS
 4. **Affinity** — warianty `required` i `preferred`
 5. **Taints i tolerations** — odpychanie zamiast przyciągania
 6. **Priorytety i preemption** — kto komu ustępuje miejsca
@@ -165,7 +165,117 @@ resources:
 
 <!-- _class: sekcja -->
 
-# 2. Requests, limits i klasy QoS
+# 2. Ustawienia schedulera
+
+---
+
+# Scheduler ma własną konfigurację
+
+<div data-marpit-fragment>
+
+Na klastrze kubeadm scheduler startuje **bez `--config`**, czyli z ustawieniami
+domyślnymi: jeden profil `default-scheduler`, punktacja `LeastAllocated`.
+Własne ustawienia podaje plik `KubeSchedulerConfiguration`:
+
+</div>
+
+<div data-marpit-fragment>
+
+```yaml
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+clientConnection:
+  kubeconfig: /etc/kubernetes/scheduler.conf
+profiles:
+  - schedulerName: default-scheduler
+  - schedulerName: upakuj            # drugi profil w tym samym procesie
+    pluginConfig:
+      - name: NodeResourcesFit
+        args:
+          scoringStrategy:
+            type: MostAllocated      # domyślnie: LeastAllocated
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+> `LeastAllocated` rozkłada Pody na najluźniejsze node'y, `MostAllocated`
+> upycha je na najbardziej zajętych — tak, żeby puste maszyny dało się wyłączyć.
+> Na kubeadm plik trafia do static Poda: flaga `--config` plus wolumen `hostPath`.
+
+</div>
+
+---
+
+# Fazy i pluginy
+
+<div data-marpit-fragment>
+
+Każda decyzja przechodzi przez stałe fazy, a w każdej działają **pluginy**:
+
+</div>
+
+<div data-marpit-fragment>
+
+```text
+  kolejka      PrioritySort                ← kto pierwszy: priorytet Poda
+  Filter       NodeResourcesFit, NodeAffinity, TaintToleration, NodePorts,
+               VolumeBinding, PodTopologySpread, InterPodAffinity
+  PostFilter   DefaultPreemption           ← nikt nie przeszedł? preemption
+  Score        NodeResourcesFit, NodeResourcesBalancedAllocation,
+               ImageLocality, InterPodAffinity, TaintToleration
+  Bind         DefaultBinder               ← zapis nodeName w obiekcie Poda
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+> Każdy mechanizm z tego rozdziału to plugin: `nodeSelector` i affinity to
+> `NodeAffinity`, taints — `TaintToleration`, `requests` — `NodeResourcesFit`,
+> priorytety — `PrioritySort` i `DefaultPreemption`. Profil może je włączać,
+> wyłączać i stroić.
+
+</div>
+
+---
+
+# Profil wybiera Pod — `schedulerName`
+
+<div data-marpit-fragment>
+
+```yaml
+spec:
+  schedulerName: upakuj      # domyślnie: default-scheduler
+```
+
+</div>
+
+* jeden proces schedulera może obsługiwać **kilka profili** — Pod wskazuje profil nazwą
+* tak samo wskazuje się **osobny scheduler**, uruchomiony obok domyślnego
+* nazwa, której nikt nie obsługuje → Pod czeka **w ciszy**:
+
+<div data-marpit-fragment>
+
+```text
+sierota   0/1   Pending   0   10s      ← zero zdarzeń, zero warunków
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+> Gdy Pod jest `Pending`, a `describe` milczy, sprawdź `spec.schedulerName`.
+> Zwykle scheduler mówi, dlaczego odmówił — tego Poda po prostu nie widzi.
+
+</div>
+
+---
+
+<!-- _class: sekcja -->
+
+# 3. Specyfikacja Poda
 
 ---
 
@@ -236,12 +346,6 @@ Pod QOS Class may not change as a result of resizing
 > nie szkodzi przerwanie.
 
 </div>
-
----
-
-<!-- _class: sekcja -->
-
-# 3. Przypinanie Poda do node'a
 
 ---
 
@@ -662,5 +766,6 @@ a w zadaniu dodatkowym zobaczysz, że preferencja nie blokuje.
 * **taint odpycha, toleration tylko się zgadza** — przyciąga `nodeSelector`
 * klasa QoS wynika z `requests` i `limits`: Guaranteed ginie ostatni, BestEffort pierwszy
 * `PriorityClass` ustala kolejkę i to, kogo scheduler wywłaszczy — przed OOM nie chroni
+* `schedulerName` wskazuje profil; nazwa bez schedulera = `Pending` bez zdarzeń
 
 <script src="nawigacja.js"></script>

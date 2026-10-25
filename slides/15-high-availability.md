@@ -27,7 +27,8 @@ i co zrobić, zanim się o tym przekonasz
 4. **External etcd** — etcd osobno
 5. **Kopia zapasowa** — i czego nie obejmuje
 6. **Odtwarzanie** — co naprawdę robi `snapshot restore`
-7. **Lab 15** — kworum i migawka etcd
+7. **PodDisruptionBudget** — konserwacja node'ów bez przerwy w usłudze
+8. **Lab 15** — kworum i migawka etcd
 
 </div>
 
@@ -322,6 +323,12 @@ oraz kopii danych z wolumenów.
 
 ---
 
+<!-- _class: sekcja -->
+
+# 6. Odtwarzanie
+
+---
+
 # Odtwarzanie nie jest wgraniem pliku
 
 <div data-marpit-fragment>
@@ -484,6 +491,12 @@ podejściu do odtwarzania HA.
 > go użyć pod presją.
 
 </div>
+
+---
+
+<!-- _class: sekcja -->
+
+# 7. PodDisruptionBudget
 
 ---
 

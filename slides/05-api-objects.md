@@ -144,7 +144,7 @@ kubectl get pod <nazwa> -o jsonpath='{.metadata.ownerReferences[0].kind}'
 
 <!-- _class: sekcja -->
 
-# 2. Grupa v1 i katalog zasobów
+# 2. Grupa v1
 
 ---
 
@@ -182,6 +182,12 @@ kubectl api-resources | grep -i networkpolic
 
 ---
 
+<!-- _class: sekcja -->
+
+# 3. Zasoby API
+
+---
+
 # Skróty, które oszczędzają czas
 
 <div data-marpit-fragment>
@@ -215,7 +221,7 @@ kubectl api-resources -o wide | head
 
 <!-- _class: sekcja -->
 
-# 3. RBAC
+# 4. RBAC
 
 ---
 
@@ -329,6 +335,12 @@ kubectl auth can-i --list --as=…       # pełna lista uprawnień
 ```
 
 </div>
+
+---
+
+<!-- _class: sekcja -->
+
+# 5. ServiceAccount
 
 ---
 

@@ -41,7 +41,7 @@ a utrzymanie zaczyna się od podnoszenia wersji
 
 <!-- _class: sekcja -->
 
-# Cykl wydawniczy i upgrade
+# 1. Cykl wydawniczy
 
 ---
 
@@ -137,6 +137,12 @@ projekt.
 
 ---
 
+<!-- _class: sekcja -->
+
+# 2. Version skew
+
+---
+
 # Version skew — co z czym może działać
 
 <div data-marpit-fragment>
@@ -223,6 +229,12 @@ Z tabeli skew wynika jedno: **nic nie może być nowsze od apiservera**.
 
 </div>
 </div>
+
+---
+
+<!-- _class: sekcja -->
+
+# 3. Breaking changes
 
 ---
 
@@ -327,6 +339,12 @@ Pokazuje **kto** woła, nie tylko **co**.
 
 </div>
 </div>
+
+---
+
+<!-- _class: sekcja -->
+
+# 4. `kubeadm upgrade`
 
 ---
 

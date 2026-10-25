@@ -151,6 +151,12 @@ kubectl annotate deployment/sklep -n lfs458-m06 --overwrite \
 
 ---
 
+<!-- _class: sekcja -->
+
+# 3. Strategie wydania
+
+---
+
 # Strategia: jak wymieniać Pody
 
 <div class="kolumny">

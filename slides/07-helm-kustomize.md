@@ -315,6 +315,12 @@ Nowa treść → nowa nazwa → zmiana w szablonie Poda → **automatyczny rollo
 
 ---
 
+<!-- _class: sekcja -->
+
+# 3. Kiedy co wybrać
+
+---
+
 # Helm czy Kustomize
 
 <div class="kolumny">
