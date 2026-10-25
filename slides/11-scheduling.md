@@ -21,12 +21,13 @@ i jak na tę decyzję wpłynąć
 
 <div data-marpit-fragment>
 
-1. **Przegląd** — dwie fazy decyzji
-2. **Ustawienia schedulera** — czym można pokręcić
-3. **Specyfikacja Poda** — `nodeName`, `nodeSelector`, zasoby
+1. **Przegląd** — dwie fazy decyzji, `requests` kontra `limits`
+2. **Klasy QoS** — co z `requests` i `limits` wynika na node'ie
+3. **Przypinanie Poda** — `nodeName`, `nodeSelector`
 4. **Affinity** — warianty `required` i `preferred`
 5. **Taints i tolerations** — odpychanie zamiast przyciągania
-6. **Lab 11** — pięć mechanizmów rozmieszczania
+6. **Priorytety i preemption** — kto komu ustępuje miejsca
+7. **Lab 11** — pięć mechanizmów rozmieszczania
 
 </div>
 
@@ -157,6 +158,82 @@ resources:
 > Node może być obciążony w 10%, a mimo to **odrzucić** Poda — bo liczy się
 > suma zadeklarowanych `requests`, nie faktyczne zużycie. I odwrotnie:
 > node bez `requests` przyjmie wszystko, a potem padnie na OOM.
+
+</div>
+
+---
+
+<!-- _class: sekcja -->
+
+# 2. Requests, limits i klasy QoS
+
+---
+
+# Trzy klasy QoS
+
+<div data-marpit-fragment>
+
+Klasę **wylicza apiserver przy tworzeniu Poda** — z `requests` i `limits`
+wszystkich kontenerów — i zapisuje w `status.qosClass`:
+
+</div>
+
+<div data-marpit-fragment>
+
+| Klasa | Kiedy |
+|---|---|
+| `Guaranteed` | **każdy** kontener: `requests` = `limits`, dla CPU **i** pamięci |
+| `Burstable` | coś ustawione, ale warunek Guaranteed niespełniony |
+| `BestEffort` | **żadnych** `requests` ani `limits` |
+
+</div>
+
+<div data-marpit-fragment>
+
+```bash
+kubectl get pod api -o jsonpath='{.status.qosClass}'
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+> Pułapka: same `limits` bez `requests` dają **Guaranteed** — apiserver
+> przepisuje `limits` do `requests`, a scheduler rezerwuje pełny limit.
+
+</div>
+
+---
+
+# Co z klasą robi node
+
+<div data-marpit-fragment>
+
+| | Guaranteed | Burstable | BestEffort |
+|---|---|---|---|
+| `oom_score_adj` procesu | `-997` | `2`…`999` | `1000` |
+| cgroup na node'ie | `kubepods` | `kubepods-burstable` | `kubepods-besteffort` |
+| gdy node'owi brakuje pamięci | ginie **ostatni** | w środku | ginie **pierwszy** |
+
+</div>
+
+* przekroczenie `limits` pamięci → `OOMKilled`, kod wyjścia **137** — w każdej klasie
+* przekroczenie `limits` CPU → dławienie, proces żyje dalej
+* klasa jest **na całe życie Poda** — zmiana zasobów w locie, która by ją zmieniła, zostaje odrzucona:
+
+<div data-marpit-fragment>
+
+```text
+Pod QOS Class may not change as a result of resizing
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+> Praktyka: Guaranteed dla tego, czego nie wolno ubić (bazy, płatności),
+> Burstable dla typowych aplikacji, BestEffort tylko dla zadań, którym
+> nie szkodzi przerwanie.
 
 </div>
 
@@ -440,6 +517,104 @@ kubectl taint node lfs458-control-plane node-role.kubernetes.io/control-plane:No
 
 ---
 
+<!-- _class: sekcja -->
+
+# 6. Priorytety i preemption
+
+---
+
+# PriorityClass — kto jest ważniejszy
+
+<div class="kolumny">
+<div>
+
+<div data-marpit-fragment>
+
+```yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: krytyczne
+value: 1000000         # więcej = ważniej
+globalDefault: false   # true: dla Podów bez klasy
+preemptionPolicy: PreemptLowerPriority
+description: "płatności i logowanie"
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+```yaml
+# w Podzie
+spec:
+  priorityClassName: krytyczne
+```
+
+</div>
+
+</div>
+<div>
+
+* klasa to obiekt **klastrowy**, Pod wskazuje ją po nazwie
+* przy tworzeniu Poda kontroler admission `Priority` zamienia nazwę na liczbę w **`spec.priority`**
+* Pod bez klasy dostaje `0` — albo wartość klasy z `globalDefault: true`
+* wbudowane `system-cluster-critical` i `system-node-critical` są dla komponentów klastra
+
+</div>
+</div>
+
+---
+
+# Preemption — wywłaszczanie Podów
+
+<div data-marpit-fragment>
+
+Gdy Pod się nie mieści, scheduler szuka node'a, na którym **usunięcie Podów
+o niższym priorytecie** zrobi mu miejsce:
+
+</div>
+
+<div data-marpit-fragment>
+
+```text
+wazny       FailedScheduling: 0/3 nodes are available: 1 Insufficient cpu, …
+            preemption: found a potential placement for pod on node
+            lfs458-control-plane, preempting 1 victims
+wypelniacz  Preempted: Preempted by pod 8fc10cc8-… on node lfs458-control-plane
+```
+
+</div>
+
+* ofiary kończą pracę normalnie, a ich kontroler tworzy je od nowa — zwykle gdzie indziej
+* ofiar szuka się **od najniższego priorytetu**; Pody ważniejsze od nowego są nietykalne
+* `preemptionPolicy: Never` — Pod idzie na początek kolejki, ale nikogo nie wyrzuca:
+  `preemption: not eligible due to preemptionPolicy=Never`
+
+---
+
+# Priorytet a QoS — dwie różne rzeczy
+
+<div data-marpit-fragment>
+
+| | QoS | Priorytet |
+|---|---|---|
+| skąd się bierze | wyliczany z `requests` i `limits` | nadawany przez `PriorityClass` |
+| kto z niego korzysta | kubelet i jądro na node'ie | scheduler: kolejka i preemption; kubelet przy eksmisji |
+| czy się zmienia | nigdy | nigdy po utworzeniu Poda |
+
+</div>
+
+<div data-marpit-fragment>
+
+> Wysoki priorytet **nie chroni przed OOM**. Gdy na node'ie kończy się
+> pamięć, jądro zabija według `oom_score_adj` — a ten zależy od klasy QoS.
+> Ważny Pod bez `requests` i tak zginie pierwszy.
+
+</div>
+
+---
+
 <!-- _class: lab -->
 
 # Lab 11
@@ -485,5 +660,7 @@ a w zadaniu dodatkowym zobaczysz, że preferencja nie blokuje.
 * `required` = warunek (ryzyko `Pending`), `preferred` = punkty w rankingu
 * anti-affinity `required` przy `maxSurge: 1` potrafi zakleszczyć rollout
 * **taint odpycha, toleration tylko się zgadza** — przyciąga `nodeSelector`
+* klasa QoS wynika z `requests` i `limits`: Guaranteed ginie ostatni, BestEffort pierwszy
+* `PriorityClass` ustala kolejkę i to, kogo scheduler wywłaszczy — przed OOM nie chroni
 
 <script src="nawigacja.js"></script>
