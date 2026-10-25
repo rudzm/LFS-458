@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# `kubectl` dla klastra na maszynach Vagranta (moduły 02 i 16).
+#
+# Kubeconfig zostaje na maszynie `cp` — kursant pracuje tam przez `vagrant ssh`,
+# a host nie dostaje żadnego nowego kontekstu. `labctl` stawia ten katalog na
+# początku PATH, więc checki piszą zwykłe `kubectl --context kubeadm-lfs458 …`,
+# a ten skrypt wykonuje je na `cp` z kubeconfigiem administratora.
+# `--context` pomijamy: na maszynie jest jeden klaster.
+set -uo pipefail
+
+ARGI=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --context)   shift; [ $# -gt 0 ] && shift ;;
+    --context=*) shift ;;
+    *)           ARGI+=("$1"); shift ;;
+  esac
+done
+
+POLECENIE="sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf"
+[ ${#ARGI[@]} -gt 0 ] && POLECENIE+=" $(printf '%q ' "${ARGI[@]}")"
+
+exec "$(dirname "$(readlink -f "$0")")/na-maszynie" cp "$POLECENIE"

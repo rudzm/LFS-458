@@ -64,12 +64,16 @@ ENVS = {
         "loadbalancer": False,
         "opis": "3 × control plane ze stacked etcd — moduł 15",
     },
+    # Kubeconfig tego klastra zostaje na maszynie `cp` — kursant pracuje na
+    # niej przez `vagrant ssh`. `context` jest tu tylko identyfikatorem:
+    # kubectl z katalogu `bin` wykonuje polecenia na `cp` przez SSH.
     "vagrant-kubeadm": {
         "alias": "vm",
         "driver": "vagrant",
         "dir": "env/vm/kubeadm",
         "context": "kubeadm-lfs458",
-        "opis": "dwie maszyny bez klastra — moduł 02",
+        "bin": "scripts/vm-bin",
+        "opis": "dwie maszyny Vagranta — moduły 02 i 16",
     },
 }
 ALIASES = {v["alias"]: k for k, v in ENVS.items()}
@@ -141,6 +145,8 @@ def run_env(mod: dict) -> dict:
     env.setdefault("CONTAINER_CLI", container_cli())
     env["LFS458_ROOT"] = str(ROOT)
     env["ODPOWIEDZI"] = str(ODPOWIEDZI)
+    if env_for(mod).get("bin"):
+        env["PATH"] = f"{ROOT / env_for(mod)['bin']}{os.pathsep}{env.get('PATH', '')}"
     return env
 
 def engine() -> tuple[str | None, str]:
@@ -172,9 +178,14 @@ def container_cli() -> str:
 # ── kubectl ───────────────────────────────────────────────────────────────────
 
 def kubectl(ctx: str, args: list[str], timeout: int = 30) -> tuple[int, str, str]:
-    cmd = ["kubectl", "--context", ctx, *args]
+    e = next((v for v in ENVS.values() if v["context"] == ctx), {})
+    if e.get("bin"):                       # klaster na maszynach — przez SSH
+        cmd = [str(ROOT / e["bin"] / "kubectl"), *args]
+    else:
+        cmd = ["kubectl", "--context", ctx, *args]
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL)
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except FileNotFoundError:
         die("nie znaleziono kubectl")
@@ -501,10 +512,9 @@ DROGIE = {"vagrant-kubeadm"}          # tu pytamy o zgodę, zamiast po prostu ru
 def srodowisko_stoi(e: dict) -> bool:
     """Czy infrastruktura istnieje — co nie znaczy, że klaster już odpowiada.
 
-    W module 02 maszyny stoją od początku, ale kontekst `kubeadm-lfs458`
-    powstaje dopiero, gdy kursant wyeksportuje kubeconfig w zadaniu 1.
-    Te dwie rzeczy trzeba rozróżniać, inaczej automat stawiałby maszyny,
-    które już stoją.
+    W module 02 maszyny stoją od początku, ale klaster powstaje na nich
+    dopiero po `kubeadm init` w zadaniu 1. Te dwie rzeczy trzeba rozróżniać,
+    inaczej automat stawiałby maszyny, które już stoją.
     """
     if e["driver"] == "kind":
         return e["cluster"] in kind_clusters()
@@ -549,7 +559,8 @@ def cluster_reachable(mod: dict, *, cicho: bool = False) -> bool:
     if cicho:
         return False
     print()
-    print(C.red(f"Brak połączenia z klastrem (kontekst {e['context']})."))
+    gdzie = "na maszynie cp" if e.get("bin") else f"(kontekst {e['context']})"
+    print(C.red(f"Brak połączenia z klastrem {gdzie}."))
     print(C.dim(f"  {err.splitlines()[0][:150] if err else 'kubectl nie odpowiedział'}"))
     print()
     if mod.get("apiBywaNiedostepne"):
@@ -561,8 +572,8 @@ def cluster_reachable(mod: dict, *, cicho: bool = False) -> bool:
         print()
         return False
     if e["driver"] == "vagrant":
-        print("To jest poprawny stan, dopóki nie wyeksportujesz kubeconfiga na hosta")
-        print("w zadaniu 1 tego modułu. Maszyny stawia:")
+        print("To jest poprawny stan, dopóki na maszynie cp nie ma klastra —")
+        print("powstaje w zadaniu 1 modułu 02 (`kubeadm init`). Maszyny stawia:")
         print(C.dim(f"  labctl env up {e['alias']}"))
     else:
         print("Postaw środowisko tego modułu:")

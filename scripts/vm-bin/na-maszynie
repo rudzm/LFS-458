@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Polecenie na maszynie Vagranta, z dowolnego katalogu:
+#
+#   na-maszynie cp 'kubeadm version -o short'
+#   na-maszynie worker 'apt-mark showhold'
+#
+# `--no-tty`, bo z terminalem Vagrant dokleja `\r` do każdej linii wyjścia,
+# a checki porównują je dosłownie.
+set -uo pipefail
+
+[ $# -ge 1 ] || { echo "użycie: na-maszynie <cp|worker> [polecenie]" >&2; exit 2; }
+MASZYNA="$1"; shift
+
+KATALOG="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)/env/vm/kubeadm"
+
+# Gdy wywołuje nas terminal, nie przekazujemy mu stdin — inaczej połykalibyśmy
+# klawisze wciśnięte w sesji `labctl lab` w trakcie sprawdzania.
+[ -t 0 ] && exec </dev/null
+
+cd "$KATALOG" && exec vagrant ssh "$MASZYNA" --no-tty -c "$*"

@@ -11,11 +11,11 @@ set -euo pipefail
 CEL="${CEL:-1.37.0-1.1}"          # pełna wersja pakietu
 CEL_K8S="${CEL_K8S:-v1.37.0}"     # wersja dla `kubeadm upgrade`
 MINOR="${MINOR:-v1.37}"
-CTX="${KUBECONTEXT:-kubeadm-lfs458}"
-VM="$(cd "$(dirname "$0")/../../../env/vm/kubeadm" && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 
-K() { kubectl --context "$CTX" "$@"; }
-na() { (cd "$VM" && vagrant ssh "$1" -c "$2"); }
+# kubeconfig jest na maszynie cp — kubectl wykonujemy tam, przez SSH
+K()  { "$ROOT/scripts/vm-bin/kubectl" "$@"; }
+na() { "$ROOT/scripts/vm-bin/na-maszynie" "$1" "$2"; }
 
 # Po restarcie kubeleta na control plane static Pody wstają od nowa i API
 # na chwilę znika. Bez tej pętli kolejny krok trafia w „connection refused" —

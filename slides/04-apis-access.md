@@ -310,8 +310,7 @@ Kubeconfig to trzy listy i wskaźnik:
 <div data-marpit-fragment>
 
 > Zmienna `KUBECONFIG` przyjmuje **listę plików** rozdzieloną dwukropkami —
-> tak scala się dostęp do kilku klastrów. Dokładnie tak doszedł Ci kontekst
-> `kubeadm-lfs458` w labie 02.
+> tak scala się dostęp do kilku klastrów w jednym `kubectl`.
 
 </div>
 

@@ -33,17 +33,15 @@ Sprawdź to przed startem — będzie wiadomo, czego *nie* trzeba robić:
 vagrant ssh cp -c "swapon --show; lsmod | grep br_netfilter; kubeadm version -o short"
 ```
 
-## Ważne: skąd weryfikator bierze klaster
+## Ważne: gdzie pracujesz i skąd weryfikator bierze klaster
 
-Sprawdzenia w tym module lecą na kontekst **`kubeadm-lfs458`**, a nie na
-`kind-lfs458`. Kontekst powstaje dopiero wtedy, gdy w zadaniu 1 wyeksportujesz
-kubeconfig na hosta. Do tego czasu każdy check mówi:
+Cały moduł robisz **na maszynach**, przez `vagrant ssh cp` i `vagrant ssh worker`.
+`kubectl` konfigurujesz na `cp` i tam zostaje — kubeconfig nie trafia na host,
+więc klaster z tego modułu nie miesza się z `kind-lfs458`.
 
-```
-brak połączenia z klastrem: context "kubeadm-lfs458" does not exist
-```
-
-To poprawny komunikat, nie awaria weryfikatora.
+Weryfikator sam łączy się z maszyną `cp`. Dopóki nie ma na niej klastra,
+każdy check jest czerwony i `labctl` mówi o braku połączenia z klastrem
+na maszynie `cp`. To poprawny komunikat, nie awaria weryfikatora.
 
 ## Ściągawka
 
@@ -63,7 +61,7 @@ To poprawny komunikat, nie awaria weryfikatora.
 
 | # | Zadanie | Pkt |
 |---|---|---|
-| 1 | `kubeadm init` + eksport kubeconfiga jako kontekst `kubeadm-lfs458` | 4 |
+| 1 | `kubeadm init` + `kubectl` skonfigurowany na `cp` | 4 |
 | 2 | Sieć Podów — node przechodzi w `Ready` | 3 |
 | 3 | `kubeadm join` worker node'a | 4 |
 | 4 | **Pytania ABCD** o to, co zostawił kubeadm: pula Podów, endpoint, katalog static Podów, ważność CA | 4 |
@@ -73,6 +71,11 @@ To poprawny komunikat, nie awaria weryfikatora.
 - **Zadanie 1** — `kubeadm init` wypisuje na końcu trzy polecenia do
   skonfigurowania `kubectl` oraz gotowe `kubeadm join`. **Skopiuj cały ten
   blok do pliku**, zanim wyczyścisz terminal.
+- **Zadanie 1, wersja z pliku** — `~/kubeadm-config.yaml` na `cp` opisuje
+  tę samą instalację: `InitConfiguration` (adres, nazwa node'a),
+  `ClusterConfiguration` (wersja, pule adresów) i `KubeletConfiguration`
+  (cgroup driver — tego flagami `kubeadm init` nie ustawisz). Na produkcji
+  wybiera się zwykle plik: da się go wersjonować i przejrzeć przed instalacją.
 - **Zadanie 2** — zanim zainstalujesz sieć, zajrzyj do
   `kubectl describe node k8s-cp`. Sekcja `Conditions` mówi wprost:
   `container runtime network not ready: NetworkReady=false … cni plugin not initialized`.
@@ -102,13 +105,6 @@ crictl ps                                       # kontenery widziane przez CRI
 To ten sam układ katalogów, te same static Pody i ta sama ConfigMapa
 `kubeadm-config`. Czego nie zobaczysz: `kubeadm init` w akcji, dołączania node'a
 i preflight checks — czyli dokładnie tego, po co jest to środowisko.
-
-> **Jeśli robisz ten lab drugi raz** (po `vagrant destroy`), usuń najpierw
-> stary kontekst: `kubectl config delete-context kubeadm-lfs458`. Przy
-> scalaniu kubeconfigów wygrywa **pierwszy** plik z listy `KUBECONFIG`, więc
-> wpis z poprzedniej generacji maszyn przykryłby świeży certyfikat — i `kubectl`
-> zgłaszałby `x509: certificate signed by unknown authority` przy całkowicie
-> sprawnym klastrze.
 
 ## Sprzątanie
 

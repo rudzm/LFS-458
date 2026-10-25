@@ -15,37 +15,35 @@ intro: |
   vagrant ssh worker    # worker node,      192.168.56.11
   ```
 
-  > **Weryfikator łączy się z kontekstem `kubeadm-lfs458`.** Dopóki nie
-  > wyeksportujesz kubeconfiga na hosta (zadanie 1), wszystkie sprawdzenia będą
-  > czerwone z komunikatem o brakującym kontekście — i to jest poprawne.
-
-cleanup:
-  - name: "Usuwam namespace lfs458-m02"
-    timeout: 3m
-    ignoreError: true
-    script: |
-      kubectl --context kubeadm-lfs458 delete namespace lfs458-m02 --ignore-not-found --wait=true
+  Całą pracę wykonujesz **na maszynach**. `kubectl` skonfigurujesz na `cp`
+  i tam zostaje — na hoście nic się nie zmienia. Weryfikator sam łączy się
+  z maszyną `cp`, więc dopóki nie ma na niej klastra (zadanie 1), wszystkie
+  sprawdzenia są czerwone — i to jest poprawne.
 
 tasks:
   - id: task-1
     points: 4
     description: |
-      **Postaw control plane i daj weryfikatorowi dostęp.**
+      **Postaw control plane i skonfiguruj `kubectl`.**
 
       Na maszynie `cp` uruchom `kubeadm init` z pulą adresów Podów
       **`10.244.0.0/16`**, ogłaszając adres **`192.168.56.10`**.
 
-      Potem skonfiguruj `kubectl` na maszynie `cp` **oraz** wyeksportuj
-      kubeconfig na hosta jako kontekst **`kubeadm-lfs458`** — bez tego
-      weryfikator nie ma jak sprawdzić Twojej pracy.
+      Potem skonfiguruj `kubectl` dla swojego użytkownika na `cp` — tak, żeby
+      `kubectl get nodes` działało **bez `sudo`**. Z tego `kubectl` korzystasz
+      w całym module.
+
+      > Tę samą instalację da się opisać plikiem. Na `cp` leży gotowy
+      > **`~/kubeadm-config.yaml`** z tymi samymi ustawieniami, co flagi wyżej —
+      > zajrzyj do niego i wybierz jedną drogę:
+      > `sudo kubeadm init --config ~/kubeadm-config.yaml`
 
       > Node będzie w stanie `NotReady`. To nie awaria — brakuje sieci Podów,
       > którą dołożysz w kolejnym zadaniu.
     hints:
       - "`kubeadm init` przyjmuje flagi `--pod-network-cidr` i `--apiserver-advertise-address`. Uruchom go przez `sudo`."
       - "Po udanym `init` kubeadm sam wypisuje trzy polecenia do skonfigurowania `kubectl` (`mkdir -p $HOME/.kube` …). Wykonaj je na maszynie `cp`."
-      - "Kubeconfig ściągniesz na hosta z katalogu z Vagrantfile'em:\n\n```bash\ncd env/vm/kubeadm\nvagrant ssh cp -c 'sudo cat /etc/kubernetes/admin.conf' > /tmp/admin.conf\n```"
-      - "Adres w pobranym pliku wskazuje na 192.168.56.10 — to działa z hosta. Zmień nazwy na `kubeadm-lfs458` i scal z własnym kubeconfigiem:\n\n```bash\nsed -i.bak 's/kubernetes-admin@kubernetes/kubeadm-lfs458/' /tmp/admin.conf\n# jeśli wpis o tej nazwie już istnieje (np. z poprzedniego podejścia),\n# usuń go — przy scalaniu wygrywa PIERWSZY plik z listy KUBECONFIG\nkubectl config delete-context kubeadm-lfs458 2>/dev/null\nKUBECONFIG=~/.kube/config:/tmp/admin.conf kubectl config view --flatten > /tmp/merged\nmv /tmp/merged ~/.kube/config\n```"
+      - "Kubeconfig administratora leży w `/etc/kubernetes/admin.conf` i czyta go tylko root. Skopiuj go do `~/.kube/config` i zmień właściciela na siebie — inaczej `kubectl` bez `sudo` dostanie `permission denied`."
     solution: |
       Na maszynie `cp`:
 
@@ -54,18 +52,17 @@ tasks:
         --pod-network-cidr=10.244.0.0/16 \
         --apiserver-advertise-address=192.168.56.10
 
+      # albo to samo z pliku:
+      # sudo kubeadm init --config ~/kubeadm-config.yaml
+
       mkdir -p $HOME/.kube
       sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
       sudo chown $(id -u):$(id -g) $HOME/.kube/config
-      ```
 
-      Na hoście — gotowy skrypt robi to samo:
-
-      ```bash
-      labs/02-installation/solutions/export-kubeconfig.sh
+      kubectl get nodes          # NotReady — tak ma być do zadania 2
       ```
     checks:
-      - name: "kontekst kubeadm-lfs458 działa i widzi control plane node"
+      - name: "na maszynie cp działa control plane"
         resource:
           apiVersion: v1
           kind: Node
@@ -108,6 +105,14 @@ tasks:
               op: gte
               value: 3
             message: "w kube-system powinny być Pody apiservera, schedulera i controller-managera"
+      - name: "kubectl działa na cp bez sudo"
+        exec:
+          timeout: 2m
+          script: |
+            ILE=$(na-maszynie cp 'kubectl get nodes --no-headers 2>&1' | grep -c ' Ready\| NotReady')
+            [ "$ILE" -ge 1 ] && echo "WYNIK: kubectl działa" \
+              || echo "WYNIK: kubectl na cp nie widzi klastra — skopiuj admin.conf do ~/.kube/config i zmień właściciela"
+          stdoutMatches: "WYNIK: kubectl działa"
 
   - id: task-2
     points: 3
@@ -224,14 +229,6 @@ tasks:
       sudo kubeadm join 192.168.56.10:6443 --token <token> \
         --discovery-token-ca-cert-hash sha256:<hash>
       ```
-
-      Z hosta jednym poleceniem:
-
-      ```bash
-      cd env/vm/kubeadm
-      JOIN=$(vagrant ssh cp -c "sudo kubeadm token create --print-join-command" 2>/dev/null | tr -d '\r')
-      vagrant ssh worker -c "sudo $JOIN"
-      ```
     checks:
       - name: "klaster ma dwa node'y"
         resource:
@@ -272,16 +269,11 @@ tasks:
       Cztery pytania o konfigurację, którą `kubeadm init` zapisał w klastrze
       i na dysku maszyny `cp`. Warianty pochodzą z Twojego klastra.
 
-      Gdzie szukać — z hosta:
+      Gdzie szukać — na maszynie `cp`:
 
       ```bash
       kubectl -n kube-system get cm kubeadm-config -o yaml
       kubectl -n kube-public get cm cluster-info -o yaml
-      ```
-
-      i na maszynie `cp` (`vagrant ssh cp`):
-
-      ```bash
       sudo grep staticPodPath /var/lib/kubelet/config.yaml
       sudo kubeadm certs check-expiration
       ```

@@ -142,7 +142,7 @@ w `~/.labctl/progress.json`.
 
 | Nazwa | Alias | Moduły | Co to jest |
 |---|---|---|---|
-| `kind-basic` | `basic` | 14 z 17 | 3 node'y, ingress-nginx, metrics-server, cloud-provider-kind |
+| `kind-basic` | `basic` | 14 z 18 | 3 node'y, ingress-nginx, metrics-server, cloud-provider-kind |
 | `kind-ha` | `ha` | 15 | 3 × control plane ze stacked etcd + HAProxy |
 | `vagrant-kubeadm` | `vm` | 02, 16 | dwie maszyny **bez** klastra, Kubernetes **1.36** |
 
@@ -150,6 +150,22 @@ Maszyny Vagranta celowo startują o jeden minor niżej niż klastry kind
 (`K8S_MINOR` w `env/vm/kubeadm/Vagrantfile`): lab 02 stawia na nich klaster
 1.36, a lab 16 podnosi go do 1.37 przez `kubeadm upgrade`. Oba laby dzielą
 te same maszyny i robi się je jeden po drugim.
+
+Kubeconfig klastra z maszyn **zostaje na `cp`** — kursant pracuje tam przez
+`vagrant ssh`, a host nie dostaje nowego kontekstu. Weryfikator łączy się
+z maszyną sam: w modułach 02 i 16 `labctl` stawia na początku `PATH` katalog
+`scripts/vm-bin`, w którym są dwa skrypty:
+
+- `kubectl` — wykonuje polecenie na `cp` z `/etc/kubernetes/admin.conf`
+  (flagę `--context` pomija), więc checki piszą zwykłe `kubectl …`
+- `na-maszynie cp|worker '<polecenie>'` — dowolne polecenie na maszynie,
+  przez `vagrant ssh --no-tty`
+
+Z tych samych skryptów korzystają rozwiązania wzorcowe 02 i 16.
+
+Na `cp` prowizjonowanie zostawia też `~/kubeadm-config.yaml` — tę samą
+instalację co flagi `kubeadm init` z zadania 1, zapisaną w pliku, do pokazania
+`kubeadm init --config`.
 
 ```bash
 labctl env list             # co jest i czy stoi
@@ -653,7 +669,7 @@ Literówka w numerze kończy się komunikatem, nie cichym „moduł zaliczony".
 |---|---|
 | `labctl doctor`: „demon działa, ale ta sesja nie ma grupy `docker`" | przeloguj się albo `newgrp docker` |
 | wszystkie checki czerwone z „context … does not exist" | środowisko nie stoi: `labctl env up kind-basic` |
-| to samo w module 02 **przed** zadaniem 1 | tak ma być — kontekst `kubeadm-lfs458` powstaje dopiero przy eksporcie kubeconfiga |
+| w modułach 02 i 16 „brak połączenia z klastrem na maszynie cp” | przed `kubeadm init` w zadaniu 1 modułu 02 tak ma być; potem sprawdź `vagrant status` w `env/vm/kubeadm` |
 | `kind create cluster` wisi na „Starting control-plane" | za mało RAM/CPU dla silnika kontenerów |
 | `ErrImagePull` na obrazach z Docker Hub | limit anonimowych pobrań — `docker login` albo obrazy z cache |
 | Service typu LoadBalancer zostaje `<pending>` | padł `lfs458-cloud-provider`: `docker ps --filter name=lfs458-cloud-provider` |

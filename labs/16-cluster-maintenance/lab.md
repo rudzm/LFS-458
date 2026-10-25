@@ -11,10 +11,10 @@ kolejności** i co się stanie, gdy ją odwrócisz.
 
 ## Wymagania wstępne
 
-Klaster z laba 02 musi działać, a kontekst `kubeadm-lfs458` istnieć:
+Klaster z laba 02 musi działać. Na maszynie `cp` (`vagrant ssh cp`):
 
 ```bash
-kubectl --context kubeadm-lfs458 get nodes -o wide
+kubectl get nodes -o wide
 ```
 
 Oba node'y powinny raportować `v1.36.x`. Jeśli czegoś brakuje — wróć do

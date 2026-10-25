@@ -3,14 +3,14 @@
 # Wymaga postawionego środowiska vagrant-kubeadm (`labctl env up vagrant-kubeadm`).
 set -euo pipefail
 
-VMDIR="${VMDIR:-env/vm/kubeadm}"
-CTX="${CTX:-kubeadm-lfs458}"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 POD_CIDR=10.244.0.0/16
 CP_IP=192.168.56.10
 CILIUM_VER="${CILIUM_VER:-1.20.3}"
 
-vm() { (cd "$VMDIR" && vagrant ssh "$1" -c "$2" 2>/dev/null | tr -d '\r'); }
-k()  { kubectl --context "$CTX" "$@"; }
+# kubeconfig zostaje na maszynie cp — tak samo jak u kursanta
+vm() { "$ROOT/scripts/vm-bin/na-maszynie" "$1" "$2" 2>/dev/null; }
+k()  { "$ROOT/scripts/vm-bin/kubectl" "$@"; }
 
 echo "→ zadanie 1: kubeadm init na node'ie control plane"
 if vm cp "test -f /etc/kubernetes/admin.conf"; then
@@ -19,9 +19,6 @@ else
   vm cp "sudo kubeadm init --pod-network-cidr=${POD_CIDR} --apiserver-advertise-address=${CP_IP}"
   vm cp "mkdir -p \$HOME/.kube && sudo cp -f /etc/kubernetes/admin.conf \$HOME/.kube/config && sudo chown \$(id -u):\$(id -g) \$HOME/.kube/config"
 fi
-
-echo "→ zadanie 1: eksport kubeconfiga na hosta jako kontekst ${CTX}"
-bash labs/02-installation/solutions/export-kubeconfig.sh
 
 echo "→ zadanie 2: sieć Podów (Cilium)"
 if k get daemonset -n kube-system cilium >/dev/null 2>&1; then

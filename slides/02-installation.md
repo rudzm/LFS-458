@@ -364,8 +364,8 @@ Podów, endpoint apiservera, katalog static Podów i datę wygaśnięcia CA.
 
 <div data-marpit-fragment>
 
-> Checki tego modułu lecą na kontekst `kubeadm-lfs458`, który powstaje dopiero
-> w zadaniu 1. Dopóki go nie ma, wszystko jest czerwone — **i tak ma być**.
+> Pracujesz na maszynach przez `vagrant ssh` — kubeconfig zostaje na `cp`.
+> Dopóki nie ma tam klastra, wszystkie checki są czerwone — **i tak ma być**.
 
 </div>
 
