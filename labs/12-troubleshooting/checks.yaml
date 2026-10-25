@@ -514,13 +514,15 @@ tasks:
           wskazowka: "kubectl get deploy widmo -n lfs458-m12-quiz -o jsonpath='{.spec.template.spec.containers[*].image}'"
 
         - pytanie: |
-            Jaki powód podaje warunek `PodScheduled` Poda `bez-miejsca`?
+            Pod `bez-miejsca` jest `Pending`. Czego zabrakło mu na node'ach
+            według zdarzenia `FailedScheduling` (fraza `Insufficient …`)?
           odpowiedz:
             script: |
               kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pod bez-miejsca -n lfs458-m12-quiz \
-                -o jsonpath='{.status.conditions[?(@.type=="PodScheduled")].reason}'
-          mylne: ["SchedulingDisabled", "NodeAffinity", "Evicted"]
-          wskazowka: "kubectl describe pod bez-miejsca -n lfs458-m12-quiz | sed -n '/Conditions/,/Events/p'"
+                -o jsonpath='{.status.conditions[?(@.type=="PodScheduled")].message}' \
+                | grep -o 'Insufficient [a-z-]*' | head -1 | awk '{print $2}'
+          mylne: ["cpu", "pods", "ephemeral-storage"]
+          wskazowka: "kubectl describe pod bez-miejsca -n lfs458-m12-quiz — sekcja Events"
 
   # ── naprawa control plane ────────────────────────────────────────────────
   # Każde z tych zadań psuje coś, bez czego klaster przestaje działać.

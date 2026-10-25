@@ -403,18 +403,8 @@ tasks:
       **Zbadaj bramki swojego apiservera.**
 
       Zadanie dodatkowe. Każde żądanie przechodzi przez trzy bramki:
-      uwierzytelnienie, autoryzację i admission. Sprawdź, jak zachowują się
-      w Twoim klastrze, i odpowiedz na trzy pytania.
-
-      Flagi apiservera:
-
-      ```bash
-      kubectl -n kube-system get pod -l component=kube-apiserver \
-        -o jsonpath='{.items[0].spec.containers[0].command}' | tr ',' '\n' \
-        | grep admission
-      ```
-
-      A tak wyślesz żądanie z pominięciem `kubectl`:
+      uwierzytelnienie, autoryzację i admission. Wyślij do apiservera dwa
+      żądania z pominięciem `kubectl` i odpowiedz na trzy pytania:
 
       ```bash
       SERWER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
@@ -423,15 +413,6 @@ tasks:
       ```
     quiz:
       pytania:
-        - pytanie: |
-            Jakie pluginy admission włącza **jawnie** flaga `--enable-admission-plugins`?
-          odpowiedz:
-            script: |
-              kubectl --context "${KUBECONTEXT:-kind-lfs458}" -n kube-system get pod -l component=kube-apiserver -o json \
-                | jq -r '.items[0].spec.containers[0].command[] | select(startswith("--enable-admission-plugins="))' | cut -d= -f2-
-          mylne: ["NodeRestriction,PodSecurity", "PodSecurity", "AlwaysAdmit"]
-          wskazowka: "PodSecurity z zadania 2 działało — a czy jest na tej liście?"
-
         - pytanie: |
             Jaki kod HTTP zwraca apiserver na żądanie z **zmyślonym tokenem**?
           odpowiedz:
@@ -451,6 +432,14 @@ tasks:
               curl -sk -o /dev/null -w '%{http_code}' "$S/api"
           mylne: ["401", "200", "404"]
           wskazowka: "pierwsze polecenie curl z treści zadania"
+
+        - pytanie: |
+            Która z trzech bramek odrzuciła żądanie **bez tokena**?
+          odpowiedz:
+            script: |
+              echo autoryzacja
+          mylne: ["uwierzytelnianie", "admission", "walidacja"]
+          wskazowka: "porównaj kod odpowiedzi z tabelą przy drodze żądania do etcd: 401 i 403 to różne bramki"
 
   - id: task-6
     points: 2
