@@ -31,7 +31,7 @@ cleanup:
 
 tasks:
   - id: task-1
-    points: 4
+    points: 3
     description: |
       **Napisz manifest Poda od zera.**
 
@@ -43,8 +43,6 @@ tasks:
       | obraz | `nginx:1.27-alpine` |
       | etykiety | `app=lab04` oraz `warstwa=web` |
       | port | nazwany `http`, numer `80` |
-      | `requests` | `cpu: 50m`, `memory: 64Mi` |
-      | `limits` | `memory: 128Mi` |
 
       Szkielet wygenerujesz poleceniem, a resztę dopiszesz ręcznie:
 
@@ -52,13 +50,12 @@ tasks:
       kubectl run prosty --image=nginx:1.27-alpine --dry-run=client -o yaml > prosty.yaml
       ```
     hints:
-      - "Nazwy pól sprawdzisz bez wychodzenia z terminala: `kubectl explain pod.spec.containers.resources` i `kubectl explain pod.spec.containers.ports`."
+      - "Nazwy pól sprawdzisz bez wychodzenia z terminala: `kubectl explain pod.spec.containers.ports`."
       - "Porty to lista: każdy element ma `name` i `containerPort`. Nazwa portu może mieć najwyżej 15 znaków."
-      - "Etykiety idą do `metadata.labels`, a nie do `spec`. Zasoby — do `spec.containers[].resources`."
-      - "Komplet:\n\n```yaml\napiVersion: v1\nkind: Pod\nmetadata:\n  name: prosty\n  namespace: lfs458-m04\n  labels:\n    app: lab04\n    warstwa: web\nspec:\n  containers:\n    - name: nginx\n      image: nginx:1.27-alpine\n      ports:\n        - name: http\n          containerPort: 80\n      resources:\n        requests:\n          cpu: 50m\n          memory: 64Mi\n        limits:\n          memory: 128Mi\n```"
+      - "Etykiety idą do `metadata.labels`, a nie do `spec`."
+      - "Komplet:\n\n```yaml\napiVersion: v1\nkind: Pod\nmetadata:\n  name: prosty\n  namespace: lfs458-m04\n  labels:\n    app: lab04\n    warstwa: web\nspec:\n  containers:\n    - name: nginx\n      image: nginx:1.27-alpine\n      ports:\n        - name: http\n          containerPort: 80\n```"
     solution: |
       ```bash
-
       cat <<'EOF' | kubectl apply -f -
       apiVersion: v1
       kind: Pod
@@ -75,12 +72,6 @@ tasks:
             ports:
               - name: http
                 containerPort: 80
-            resources:
-              requests:
-                cpu: 50m
-                memory: 64Mi
-              limits:
-                memory: 128Mi
       EOF
       ```
     checks:
@@ -126,23 +117,6 @@ tasks:
           - path: "{.spec.containers[*].ports[*].containerPort}"
             op: eq
             value: 80
-      - name: "ustawiono requests i limits"
-        resource:
-          apiVersion: v1
-          kind: Pod
-          namespace: lfs458-m04
-          name: prosty
-        assert:
-          - path: "{.spec.containers[*].resources.requests.cpu}"
-            op: eq
-            value: "50m"
-            message: "requests.cpu ma być 50m"
-          - path: "{.spec.containers[*].resources.requests.memory}"
-            op: eq
-            value: "64Mi"
-          - path: "{.spec.containers[*].resources.limits.memory}"
-            op: eq
-            value: "128Mi"
 
   - id: task-2
     points: 3

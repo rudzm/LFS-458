@@ -24,12 +24,6 @@ spec:
       ports:
         - name: http
           containerPort: 80
-      resources:
-        requests:
-          cpu: 50m
-          memory: 64Mi
-        limits:
-          memory: 128Mi
 YAML
 k wait --for=condition=Ready pod/prosty -n "$NS" --timeout=180s
 

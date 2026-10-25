@@ -238,7 +238,7 @@ Technologia istniała od lat — namespace'y i cgroups były w jądrze
 
 Z tego Kubernetes buduje `requests`
 i `limits`, które zobaczysz
-w rozdziałach 4 i 11.
+w rozdziale 11.
 
 </div>
 

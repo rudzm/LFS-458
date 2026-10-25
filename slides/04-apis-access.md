@@ -368,7 +368,7 @@ kubectl explain pod.spec.restartPolicy       # na końcu: wartość domyślna
 
 <div data-marpit-fragment>
 
-**13 punktów + 3 dodatkowe**
+**12 punktów + 3 dodatkowe**
 
 </div>
 

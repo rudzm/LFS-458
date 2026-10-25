@@ -1,6 +1,6 @@
 # Lab 04 — rozmowa z serwerem API
 
-**13 punktów obowiązkowych + 3 dodatkowe**
+**12 punktów obowiązkowych + 3 dodatkowe**
 
 ## Cel
 
@@ -24,9 +24,8 @@ za każdym razem, gdy `kubectl` zachowa się dziwnie.
 | zobaczyć surowe żądanie | `kubectl get pods -v=8` |
 | odpytać API przez kubectl | `kubectl get --raw /api/v1/namespaces/lfs458-m04/pods` |
 | wystawić API na localhost | `kubectl proxy --port=8001 &` (potem `kill %1`) |
-| listę zasobów i skrótów | `kubectl api-resources` |
-| tylko zasoby klastrowe | `kubectl api-resources --namespaced=false` |
-| dokumentację pola | `kubectl explain pod.spec.containers.resources` |
+| listę zasobów API | `kubectl api-resources` |
+| dokumentację pola | `kubectl explain pod.spec.containers.ports` |
 | wygenerować szkielet | `kubectl run web --image=nginx --dry-run=client -o yaml` |
 | zwalidować bez zapisu | `kubectl apply -f plik.yaml --dry-run=server` |
 | wybrane pole obiektu | `kubectl get pod prosty -n lfs458-m04 -o jsonpath='{.spec.nodeName}'` |
@@ -36,7 +35,7 @@ za każdym razem, gdy `kubectl` zachowa się dziwnie.
 
 | # | Zadanie | Pkt |
 |---|---|---|
-| 1 | Pod `prosty` z manifestu — etykiety, nazwany port, `requests` i `limits` | 4 |
+| 1 | Pod `prosty` z manifestu — etykiety i nazwany port | 3 |
 | 2 | Adnotacje kontra etykiety na tym samym Podzie | 3 |
 | 3 | **Pytania ABCD** o odpowiedź API: ścieżka, `kind`, `items`, grupa Deploymentu | 3 |
 | 4 | **Pytania ABCD** — wartość domyślna i typ pola, wersja grupy, ścieżka w API | 3 |

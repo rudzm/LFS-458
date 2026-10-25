@@ -134,7 +134,7 @@ tasks:
 
       Potem zajrzyj do pliku `/sys/fs/cgroup/memory.max` w obu kontenerach.
       Jądro egzekwuje dokładnie tę liczbę — z niej Kubernetes zbuduje
-      `limits` z rozdziału 6.
+      `limits` z rozdziału 11.
     hints:
       - "Limit pamięci ustawia flaga `--memory` (albo `-m`) polecenia `docker run`."
       - "Odczyt limitu ze środka:\n\n```bash\ndocker exec lfs458-limit cat /sys/fs/cgroup/memory.max\n```\n\nW `lfs458-demo` zobaczysz tam `max`, czyli brak limitu."
