@@ -4,6 +4,8 @@ chapter: 14
 chapterTitle: "Security"
 day: 4
 environment: kind-basic
+# Zadanie 7 restartuje apiserver — chwilowy brak API jest tu planowy.
+apiBywaNiedostepne: true
 
 intro: |
   Kubernetes domyślnie nie jest utwardzony: kontenery działają jako root,
@@ -15,6 +17,28 @@ intro: |
   CNI plugina, który ją obsługuje, nie robi nic i nie zgłasza błędu.
 
 cleanup:
+  - name: "Przywracam flagi serwera API"
+    timeout: 5m
+    ignoreError: true
+    script: |
+      CRI="${CONTAINER_CLI:-docker}"
+      W=lfs458-control-plane
+      if "$CRI" exec "$W" test -f /etc/kubernetes/apiserver.lab14 2>/dev/null; then
+        "$CRI" exec "$W" cp /etc/kubernetes/apiserver.lab14 /etc/kubernetes/manifests/kube-apiserver.yaml
+        "$CRI" exec "$W" rm -f /etc/kubernetes/apiserver.lab14
+        # Dalsze kroki potrzebują API, a kubelet podnosi przywrócony manifest
+        # dopiero po kilkudziesięciu sekundach — czekamy na apiserver
+        # z oryginalnymi flagami, nie na pierwszą odpowiedź starego.
+        K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+        for _ in $(seq 1 90); do
+          F=$($K -n kube-system get pod -l component=kube-apiserver -o json 2>/dev/null \
+                | jq -r '.items[0].spec.containers[0].command | join(" ")')
+          case "$F" in *AlwaysPullImages*|*disable-admission-plugins=LimitRanger*|"") sleep 3 ;; *) break ;; esac
+        done
+        echo "flagi apiservera przywrócone"
+      else
+        echo "apiserver nie był zmieniany"
+      fi
   - name: "Usuwam arkusz odpowiedzi"
     timeout: 30s
     ignoreError: true
@@ -27,6 +51,7 @@ cleanup:
       K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
       $K delete namespace lfs458-m14 --ignore-not-found --wait=true
       $K delete namespace lfs458-m14-scisly --ignore-not-found --wait=true
+      $K delete namespace lfs458-m14-wtyczki --ignore-not-found --wait=true
   - name: "Usuwam namespace zadania quizowego"
     timeout: 5m
     ignoreError: true
@@ -403,8 +428,15 @@ tasks:
       **Zbadaj bramki swojego apiservera.**
 
       Zadanie dodatkowe. Każde żądanie przechodzi przez trzy bramki:
-      uwierzytelnienie, autoryzację i admission. Wyślij do apiservera dwa
-      żądania z pominięciem `kubectl` i odpowiedz na trzy pytania:
+      uwierzytelnienie, autoryzację i admission. Sprawdź flagi apiservera,
+      wyślij do niego dwa żądania z pominięciem `kubectl` i odpowiedz na cztery
+      pytania.
+
+      ```bash
+      kubectl -n kube-system get pod -l component=kube-apiserver -o yaml | grep admission
+      ```
+
+      Żądania:
 
       ```bash
       SERWER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
@@ -413,6 +445,15 @@ tasks:
       ```
     quiz:
       pytania:
+        - pytanie: |
+            Jakie pluginy admission włącza **jawnie** flaga `--enable-admission-plugins`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" -n kube-system get pod -l component=kube-apiserver -o json \
+                | jq -r '.items[0].spec.containers[0].command[] | select(startswith("--enable-admission-plugins="))' | cut -d= -f2-
+          mylne: ["NodeRestriction,PodSecurity", "PodSecurity", "AlwaysAdmit"]
+          wskazowka: "kubectl -n kube-system get pod -l component=kube-apiserver -o yaml | grep admission"
+
         - pytanie: |
             Jaki kod HTTP zwraca apiserver na żądanie z **zmyślonym tokenem**?
           odpowiedz:
@@ -493,3 +534,119 @@ tasks:
                 | tr ' ' '\n' | grep -oE '^--authorization-mode=.*' | cut -d= -f2
           mylne: ["RBAC", "AlwaysAllow", "ABAC,RBAC"]
           wskazowka: "argumenty static Poda apiservera — szukaj --authorization-mode"
+
+  # Zmienia flagi apiservera, więc stoi na końcu: restart API nie przeszkadza
+  # we wcześniejszych zadaniach. Kopię manifestu robi `przygotuj`, a sprzątanie
+  # modułu przywraca z niej oryginał.
+  - id: task-7
+    points: 4
+    przygotuj:
+      opis: "robię kopię manifestu apiservera i przygotowuję namespace…"
+      timeout: 2m
+      script: |
+        CRI="${CONTAINER_CLI:-docker}"
+        "$CRI" exec lfs458-control-plane test -f /etc/kubernetes/apiserver.lab14 \
+          || "$CRI" exec lfs458-control-plane cp /etc/kubernetes/manifests/kube-apiserver.yaml \
+               /etc/kubernetes/apiserver.lab14
+        K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+        $K create namespace lfs458-m14-wtyczki --dry-run=client -o yaml | $K apply -f - >/dev/null
+        cat <<'YAML' | $K apply -f - >/dev/null
+        apiVersion: v1
+        kind: LimitRange
+        metadata: {name: domyslne, namespace: lfs458-m14-wtyczki}
+        spec:
+          limits:
+            - type: Container
+              defaultRequest: {cpu: 100m, memory: 128Mi}
+        YAML
+    description: |
+      **Zmień zestaw pluginów admission.**
+
+      Serwer API ma włączone pluginy, których nie widać we flagach — działają
+      domyślnie. Zmień ten zestaw:
+
+      - **włącz** `AlwaysPullImages`
+      - **wyłącz** `LimitRanger`
+
+      Flagi są w manifeście static Poda na node'ie control plane:
+
+      ```bash
+      docker exec -it lfs458-control-plane bash
+      # plik: /etc/kubernetes/manifests/kube-apiserver.yaml
+      ```
+
+      `labctl` zrobił już kopię oryginału w `/etc/kubernetes/apiserver.lab14` —
+      skorzysta z niej sprzątanie modułu.
+
+      Gdy apiserver wstanie z nowymi flagami, sprawdź skutek w namespace
+      **`lfs458-m14-wtyczki`** — stoi tam LimitRange `domyslne` z domyślnymi
+      `requests`. Utwórz Poda **`sprawdzian`** (`nginx:1.27-alpine`)
+      z `imagePullPolicy: IfNotPresent` i **bez** `resources`. Po zapisie ma mieć
+      `imagePullPolicy: Always` i **żadnych** `requests`.
+
+      > Przez kilkadziesiąt sekund po zapisaniu pliku odpowiada jeszcze **stary**
+      > apiserver. Że zmiana weszła, poznasz po flagach mirror Poda — nie po tym,
+      > że `kubectl` działa.
+    hints:
+      - "Plugin do włączenia dopisujesz po przecinku do `--enable-admission-plugins` — `NodeRestriction` ma zostać. Wyłączanie to osobna flaga: `--disable-admission-plugins`."
+      - "Bez edytora, jednym poleceniem z hosta:\n\n```bash\ndocker exec lfs458-control-plane sed -i \\\n  's|--enable-admission-plugins=NodeRestriction$|--enable-admission-plugins=NodeRestriction,AlwaysPullImages\\n    - --disable-admission-plugins=LimitRanger|' \\\n  /etc/kubernetes/manifests/kube-apiserver.yaml\n```"
+      - "Czy nowy apiserver już działa:\n\n```bash\nkubectl -n kube-system get pod -l component=kube-apiserver -o yaml | grep admission\n```"
+      - "Pod i jego zapisane pola:\n\n```bash\nkubectl run sprawdzian -n lfs458-m14-wtyczki --image=nginx:1.27-alpine --image-pull-policy=IfNotPresent\nkubectl get pod sprawdzian -n lfs458-m14-wtyczki \\\n  -o jsonpath='{.spec.containers[0].imagePullPolicy} {.spec.containers[0].resources}{\"\\n\"}'\n```"
+    solution: |
+      ```bash
+      docker exec lfs458-control-plane sed -i \
+        's|--enable-admission-plugins=NodeRestriction$|--enable-admission-plugins=NodeRestriction,AlwaysPullImages\n    - --disable-admission-plugins=LimitRanger|' \
+        /etc/kubernetes/manifests/kube-apiserver.yaml
+
+      # czekamy, aż kubelet podniesie apiserver z nowymi flagami
+      until kubectl -n kube-system get pod -l component=kube-apiserver -o yaml 2>/dev/null \
+              | grep -q AlwaysPullImages; do sleep 5; done
+
+      kubectl run sprawdzian -n lfs458-m14-wtyczki --image=nginx:1.27-alpine --image-pull-policy=IfNotPresent
+      kubectl get pod sprawdzian -n lfs458-m14-wtyczki \
+        -o jsonpath='{.spec.containers[0].imagePullPolicy} {.spec.containers[0].resources}{"\n"}'
+      # Always {}
+      ```
+
+      Pod utworzony, zanim nowy apiserver wstał, ma jeszcze stare wartości —
+      wtedy usuń go i utwórz ponownie. Pluginy admission działają **przy zapisie**
+      obiektu, nie później.
+    checks:
+      - name: "AlwaysPullImages włączony, NodeRestriction nadal jest"
+        exec:
+          timeout: 60s
+          script: |
+            F=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" -n kube-system get pod -l component=kube-apiserver -o json 2>/dev/null \
+                  | jq -r '.items[0].spec.containers[0].command[] | select(startswith("--enable-admission-plugins="))' | cut -d= -f2)
+            case ",$F," in
+              *,AlwaysPullImages,*) case ",$F," in *,NodeRestriction,*) echo "WYNIK: ok";; *) echo "WYNIK: zniknął NodeRestriction ($F)";; esac ;;
+              *) echo "WYNIK: --enable-admission-plugins=$F — brak AlwaysPullImages albo apiserver jeszcze nie wstał" ;;
+            esac
+          stdoutMatches: "WYNIK: ok"
+      - name: "LimitRanger wyłączony"
+        exec:
+          timeout: 60s
+          script: |
+            F=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" -n kube-system get pod -l component=kube-apiserver -o json 2>/dev/null \
+                  | jq -r '.items[0].spec.containers[0].command[] | select(startswith("--disable-admission-plugins="))' | cut -d= -f2)
+            case ",$F," in *,LimitRanger,*) echo "WYNIK: ok";; *) echo "WYNIK: --disable-admission-plugins='$F'";; esac
+          stdoutMatches: "WYNIK: ok"
+      - name: "Pod sprawdzian dostał imagePullPolicy: Always"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m14-wtyczki
+          name: sprawdzian
+        assert:
+          - path: "{.spec.containers[0].imagePullPolicy}"
+            op: eq
+            value: Always
+            message: "Pod powstał, zanim nowy apiserver wstał? Usuń go i utwórz ponownie"
+      - name: "LimitRange nie dołożył Podowi requests"
+        exec:
+          timeout: 60s
+          script: |
+            R=$(kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pod sprawdzian -n lfs458-m14-wtyczki \
+                  -o jsonpath='{.spec.containers[0].resources.requests}' 2>&1)
+            if [ -z "$R" ]; then echo "WYNIK: brak requests"; else echo "WYNIK: Pod ma requests $R — LimitRanger działał przy jego zapisie"; fi
+          stdoutMatches: "WYNIK: brak requests"

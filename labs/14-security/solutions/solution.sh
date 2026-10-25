@@ -116,9 +116,35 @@ fi
 echo "→ zadanie 5 (dodatkowe): konfiguracja apiservera"
 SERWER=$(k config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 echo "   odpowiedzi do pytań w labctl lab:"
+echo "     --enable-admission-plugins: $(k -n kube-system get pod -l component=kube-apiserver -o json | jq -r '.items[0].spec.containers[0].command[] | select(startswith("--enable-admission-plugins="))' | cut -d= -f2-)"
 echo "     zmyślony token: $(curl -sk -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer zmyslony' "$SERWER/api")"
 echo "     bez tokena:     $(curl -sk -o /dev/null -w '%{http_code}' "$SERWER/api")"
 echo "     bramka przy 403: autoryzacja"
+
+echo "→ zadanie 7: pluginy admission (kopię manifestu robi labctl przed zadaniem)"
+docker exec lfs458-control-plane test -f /etc/kubernetes/apiserver.lab14 \
+  || docker exec lfs458-control-plane cp /etc/kubernetes/manifests/kube-apiserver.yaml /etc/kubernetes/apiserver.lab14
+if ! docker exec lfs458-control-plane grep -q AlwaysPullImages /etc/kubernetes/manifests/kube-apiserver.yaml; then
+  docker exec lfs458-control-plane sed -i \
+    's|--enable-admission-plugins=NodeRestriction$|--enable-admission-plugins=NodeRestriction,AlwaysPullImages\n    - --disable-admission-plugins=LimitRanger|' \
+    /etc/kubernetes/manifests/kube-apiserver.yaml
+fi
+echo "   czekam na apiserver z nowymi flagami"
+until k -n kube-system get pod -l component=kube-apiserver -o yaml 2>/dev/null | grep -q AlwaysPullImages; do sleep 5; done
+until k get --raw /healthz >/dev/null 2>&1; do sleep 3; done
+k create namespace lfs458-m14-wtyczki --dry-run=client -o yaml | k apply -f - >/dev/null
+cat <<'YAML' | k apply -f - >/dev/null
+apiVersion: v1
+kind: LimitRange
+metadata: {name: domyslne, namespace: lfs458-m14-wtyczki}
+spec:
+  limits:
+    - type: Container
+      defaultRequest: {cpu: 100m, memory: 128Mi}
+YAML
+k delete pod sprawdzian -n lfs458-m14-wtyczki --ignore-not-found >/dev/null
+k run sprawdzian -n lfs458-m14-wtyczki --image=nginx:1.27-alpine --image-pull-policy=IfNotPresent
+k get pod sprawdzian -n lfs458-m14-wtyczki -o jsonpath='   {.spec.containers[0].imagePullPolicy} {.spec.containers[0].resources}{"\n"}'
 
 echo
 echo "Gotowe. Weryfikacja: labctl check 14"

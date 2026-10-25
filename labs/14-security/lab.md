@@ -1,6 +1,6 @@
 # Lab 14 — utwardzanie
 
-**18 punktów obowiązkowych + 3 dodatkowe**
+**22 punkty obowiązkowe + 3 dodatkowe**
 
 ## Cel
 
@@ -32,8 +32,9 @@ Dokładasz to, czego brakuje.
 | 2 | Pod Security Admission na poziomie `restricted` | 4 |
 | 3 | Scena do testu izolacji: serwer i dwaj klienci | 4 |
 | 4 | `NetworkPolicy` + **doświadczalny dowód**, że działa | 4 |
-| 5 | *(dodatkowe)* **pytania ABCD** o kody 401/403 i bramki żądania | 3 |
+| 5 | *(dodatkowe)* **pytania ABCD** o pluginy admission, kody 401/403 i bramki żądania | 3 |
 | 6 | **Pytania ABCD** — uprawnienia, PSA, tryby autoryzacji | 2 |
+| 7 | Pluginy admission: włączenie `AlwaysPullImages`, wyłączenie `LimitRanger`, dowód na Podzie | 4 |
 
 ## Na co zwrócić uwagę
 
@@ -48,6 +49,12 @@ Dokładasz to, czego brakuje.
   i nie zgłasza błędu**. Obiekt się utworzy, `kubectl get netpol` go pokaże,
   a ruch będzie płynął dalej. Dlatego sprawdzenie wymaga `wget` z obu
   klientów, a nie tylko istnienia obiektu.
+- **Zadanie 7** — zmienia flagi apiservera, więc `kubectl` znika na kilkadziesiąt
+  sekund i to jest planowe. Uwaga na pułapkę: tuż po zapisaniu manifestu
+  odpowiada jeszcze **stary** apiserver. Czy nowy już działa, sprawdzisz we
+  flagach mirror Poda (`kubectl -n kube-system get pod -l component=kube-apiserver -o yaml | grep admission`).
+  `labctl cleanup 14` przywraca oryginalne flagi z kopii, którą `labctl` zrobił
+  przed zadaniem.
 - Zrób ten sam eksperyment na każdym nowym klastrze, zanim zaufasz politykom.
   Kilka poleceń odpowiada na pytanie, na które dokumentacja nie odpowie.
 

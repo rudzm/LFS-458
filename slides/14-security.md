@@ -211,6 +211,79 @@ kubectl -n kube-system get pod -l component=kube-apiserver \
 
 ---
 
+# Pluginy, których nie widać we flagach
+
+<div data-marpit-fragment>
+
+```bash
+kubectl -n kube-system get pod -l component=kube-apiserver -o yaml | grep admission
+#     - --enable-admission-plugins=NodeRestriction
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+We flagach jest **jeden** plugin, a działa ich ponad dwadzieścia. Reszta jest
+**włączona domyślnie** i nie trzeba jej wymieniać:
+
+</div>
+
+<div data-marpit-fragment>
+
+```text
+NamespaceLifecycle, LimitRanger, ServiceAccount, PodSecurity, Priority,
+DefaultTolerationSeconds, DefaultStorageClass, StorageObjectInUseProtection,
+RuntimeClass, DefaultIngressClass, MutatingAdmissionWebhook,
+ValidatingAdmissionWebhook, ValidatingAdmissionPolicy, ResourceQuota, …
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+> Dlatego `PodSecurity` z laba działa, choć nikt go nie włączał. Pełną listę
+> domyślnych dla Twojej wersji podaje sam apiserver: `kube-apiserver --help`,
+> opis flagi `--enable-admission-plugins`.
+
+</div>
+
+---
+
+# Włączanie i wyłączanie pluginów
+
+<div data-marpit-fragment>
+
+| Flaga | Działanie |
+|---|---|
+| `--enable-admission-plugins=A,B` | włącza **dodatkowo**, poza domyślnymi |
+| `--disable-admission-plugins=C` | wyłącza plugin z listy domyślnych |
+
+</div>
+
+<div data-marpit-fragment>
+
+```yaml
+# /etc/kubernetes/manifests/kube-apiserver.yaml na node'ie control plane
+    - --enable-admission-plugins=NodeRestriction,AlwaysPullImages
+    - --disable-admission-plugins=LimitRanger
+```
+
+</div>
+
+* kubelet podnosi apiserver z nowymi flagami po **kilkudziesięciu sekundach** — do tego czasu odpowiada stary
+* czy zmiana weszła, widać we flagach mirror Poda apiservera, nie po tym, że `kubectl` działa
+* kopia manifestu — **poza** katalogiem `manifests`: każdy plik w nim kubelet uruchamia
+
+<div data-marpit-fragment>
+
+> `AlwaysPullImages` wymusza `imagePullPolicy: Always` na każdym nowym Podzie —
+> nikt nie uruchomi cudzego prywatnego obrazu z cache node'a bez poświadczeń.
+
+</div>
+
+---
+
 # ResourceQuota i LimitRange
 
 <div class="kolumny">
@@ -513,7 +586,7 @@ kubectl exec -n lfs458-m14 zabroniony -- wget -qO- --timeout=4 http://$IP:5678
 
 <div data-marpit-fragment>
 
-**18 punktów + 3 dodatkowe**
+**22 punkty + 3 dodatkowe**
 
 </div>
 
@@ -531,6 +604,7 @@ Utwardzisz Poda pełnym `securityContext`, włączysz Pod Security Admission
 na poziomie `restricted` i sprawdzisz, że namespace odrzuca uprzywilejowany
 Pod, a potem zbudujesz scenę z trzema Podami i **doświadczalnie udowodnisz**,
 że NetworkPolicy blokuje jednego klienta, a drugiego przepuszcza.
+Na koniec zmienisz zestaw pluginów admission i zobaczysz skutek na Podzie.
 
 </div>
 
@@ -549,6 +623,8 @@ Pod, a potem zbudujesz scenę z trzema Podami i **doświadczalnie udowodnisz**,
 * **401** = uwierzytelnianie, **403** = autoryzacja
 * użytkownicy nie są obiektami; ServiceAccount jest
 * admission: najpierw mutating, potem validating
+* większość pluginów admission działa **domyślnie**, choć nie ma ich we flagach;
+  `--enable-admission-plugins` dokłada, `--disable-admission-plugins` wyłącza
 * `ResourceQuota` to budżet namespace'u, `LimitRange` — domyślne wartości
   kontenera; sama quota odrzuca Pody bez `requests`
 * `PodSecurity` jest wbudowany; włącza się **etykietą namespace'u**
