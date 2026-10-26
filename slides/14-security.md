@@ -23,7 +23,7 @@ i to jest świadoma decyzja projektowa
 
 1. **Przegląd** — co jest domyślnie otwarte
 2. **Dostęp do API** — trzy bramki, przez które przechodzi żądanie
-3. **Uwierzytelnianie i autoryzacja** — kim jesteś, co możesz
+3. **Uwierzytelnianie i autoryzacja** — certyfikaty użytkowników, RBAC i ABAC
 4. **Admission controllers** — ostatnie słowo przed zapisem, limity namespace'u
 5. **Network policies** — izolacja ruchu między Podami
 6. **Lab 14** — zabezpieczasz klaster
@@ -142,6 +142,196 @@ kubectl -n kube-system get pod -l component=kube-apiserver \
 
 > `Node` autoryzuje kubelety do odczytu tylko tego, co dotyczy **ich** node'a.
 > `RBAC` obsługuje całą resztę.
+
+</div>
+
+---
+
+# Użytkownik z certyfikatu — wniosek
+
+<div class="kolumny">
+<div>
+
+<div data-marpit-fragment>
+
+```bash
+openssl genrsa -out anna.key 2048
+openssl req -new -key anna.key \
+  -out anna.csr \
+  -subj "/CN=anna/O=zespol-sklep"
+```
+
+</div>
+
+* `CN` staje się **nazwą** użytkownika, `O` — jego **grupą**
+* klucz prywatny zostaje u Ciebie; do klastra trafia tylko wniosek
+
+</div>
+<div>
+
+<div data-marpit-fragment>
+
+```yaml
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: anna
+spec:
+  request: <base64 z anna.csr>
+  signerName: kubernetes.io/kube-apiserver-client
+  expirationSeconds: 86400   # 24 h
+  usages: ["client auth"]
+```
+
+</div>
+
+</div>
+</div>
+
+<div data-marpit-fragment>
+
+> Certyfikatu **nie da się odwołać** — działa do końca ważności.
+> Dlatego `expirationSeconds` ustawia się krótko.
+
+</div>
+
+---
+
+# Administrator akceptuje albo odrzuca
+
+<div data-marpit-fragment>
+
+```bash
+kubectl get csr
+# NAME   SIGNERNAME                            REQUESTOR          CONDITION
+# anna   kubernetes.io/kube-apiserver-client   kubernetes-admin   Pending
+
+kubectl get csr anna -o jsonpath='{.spec.request}' | base64 -d | openssl req -noout -subject
+# subject=CN = anna, O = zespol-sklep         ← sprawdź, ZANIM zatwierdzisz
+
+kubectl certificate approve anna               # → Approved,Issued
+kubectl certificate deny obcy                  # → Denied, certyfikatu brak
+```
+
+</div>
+
+* `REQUESTOR` to **składający** wniosek, nie przyszły użytkownik — kogo dotyczy, mówi dopiero zdekodowany `spec.request`
+* grupy `system:masters` nie da się nawet wnioskować:
+  `use of kubernetes.io/kube-apiserver-client signer with system:masters group is not allowed`
+
+---
+
+# Kubeconfig i RBAC dla nowego użytkownika
+
+<div data-marpit-fragment>
+
+```bash
+kubectl get csr anna -o jsonpath='{.status.certificate}' | base64 -d > anna.crt
+kubectl config set-credentials anna --client-certificate=anna.crt --client-key=anna.key --embed-certs
+kubectl config set-context anna@lfs458 --cluster=kind-lfs458 --user=anna --namespace=sklep
+
+kubectl --context anna@lfs458 get pods
+# Error from server (Forbidden): pods is forbidden: User "anna" cannot list resource "pods" …
+
+kubectl create role czytelnik-podow --verb=get,list,watch --resource=pods -n sklep
+kubectl create rolebinding zespol-czyta --role=czytelnik-podow --group=zespol-sklep -n sklep
+kubectl --context anna@lfs458 get pods                       # działa
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+> Certyfikat mówi, **kim jesteś** — co Ci wolno, decyduje RBAC. Binding na
+> grupę z `O` zamiast na osobę: nowa osoba w zespole to nowy certyfikat,
+> bez zmian w RBAC.
+
+</div>
+
+---
+
+# Tryby autoryzacji
+
+<div data-marpit-fragment>
+
+| Tryb | Jak decyduje | Gdzie są reguły |
+|---|---|---|
+| `Node` | kubelet widzi tylko swój node i jego Pody | wbudowane |
+| `RBAC` | Role i Bindingi | **obiekty w API** |
+| `ABAC` | atrybuty użytkownika i zasobu z polityki | **plik na node'ach control plane** |
+| `Webhook` | pyta zewnętrzną usługę | poza klastrem |
+| `AlwaysAllow` / `AlwaysDeny` | zawsze tak / zawsze nie | tylko do testów |
+
+</div>
+
+<div data-marpit-fragment>
+
+```text
+--authorization-mode=Node,RBAC,ABAC
+```
+
+</div>
+
+* tryby pytane są **po kolei** — pierwszy, który zezwoli, kończy sprawę
+* żądanie, któremu nie zezwolił żaden, dostaje **403**
+
+---
+
+# ABAC — polityka w pliku
+
+<div data-marpit-fragment>
+
+```json
+{"apiVersion": "abac.authorization.kubernetes.io/v1beta1", "kind": "Policy",
+ "spec": {"user": "anna", "namespace": "sklep", "resource": "configmaps", "readonly": true}}
+```
+
+</div>
+
+* jedna linia pliku to jedna reguła; `readonly: true` = `get`, `list`, `watch`
+* plik czyta apiserver — trzeba go podać flagą **i** podmontować do static Poda:
+
+<div data-marpit-fragment>
+
+```yaml
+    - --authorization-mode=Node,RBAC,ABAC
+    - --authorization-policy-file=/etc/kubernetes/abac/polityka.jsonl
+    # + volumeMount i volume hostPath dla /etc/kubernetes/abac
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+```text
+$ kubectl --context anna@lfs458 auth can-i get configmaps       yes
+$ kubectl --context anna@lfs458 auth can-i create configmaps    no - abac: No policy matched.
+```
+
+</div>
+
+---
+
+# Dlaczego ABAC jest słaby
+
+<div data-marpit-fragment>
+
+```text
+$ echo '{… "resource": "secrets", "readonly": true}}' >> /etc/kubernetes/abac/polityka.jsonl
+$ kubectl --context anna@lfs458 auth can-i get secrets          # 20 s później
+no - abac: No policy matched.                ← plik czytany tylko przy starcie
+```
+
+</div>
+
+* każda zmiana reguł to **restart apiservera**
+* reguły leżą w pliku **na każdym** node'ie control plane — nie ma ich w API, więc nie zobaczysz ich `kubectl get`, nie masz historii zmian, a pliki łatwo rozjeżdżają się między node'ami
+* nie ma ról do ponownego użycia: każda reguła wprost dla użytkownika albo grupy
+
+<div data-marpit-fragment>
+
+> Dlatego w praktyce działa RBAC: reguły są obiektami w API, zmieniasz je
+> `kubectl apply` bez restartu, a sprawdzasz `kubectl auth can-i`.
 
 </div>
 
@@ -617,11 +807,19 @@ Na koniec zmienisz zestaw pluginów admission i zobaczysz skutek na Podzie.
 
 ---
 
-# Co warto zapamiętać
+# Co warto zapamiętać — tożsamość i dostęp
 
 * Kubernetes daje mechanizmy, nie politykę — hardening jest Twoją pracą
 * **401** = uwierzytelnianie, **403** = autoryzacja
 * użytkownicy nie są obiektami; ServiceAccount jest
+* użytkownik z certyfikatu: `CN` = nazwa, `O` = grupa; wniosek zatwierdza
+  administrator, a certyfikatu nie da się odwołać
+* ABAC trzyma reguły w pliku — każda zmiana to restart apiservera; dlatego RBAC
+
+---
+
+# Co warto zapamiętać — admission i sieć
+
 * admission: najpierw mutating, potem validating
 * większość pluginów admission działa **domyślnie**, choć nie ma ich we flagach;
   `--enable-admission-plugins` dokłada, `--disable-admission-plugins` wyłącza
