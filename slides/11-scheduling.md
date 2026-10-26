@@ -173,11 +173,29 @@ resources:
 
 <div data-marpit-fragment>
 
-Na klastrze kubeadm scheduler startuje **bez `--config`**, czyli z ustawieniami
-domyślnymi: jeden profil `default-scheduler`, punktacja `LeastAllocated`.
-Własne ustawienia podaje plik `KubeSchedulerConfiguration`:
+Na klastrze kubeadm scheduler startuje **bez `--config`**:
 
 </div>
+
+<div data-marpit-fragment>
+
+```bash
+kubectl -n kube-system get pod -l component=kube-scheduler -o yaml | grep -A7 command:
+#   - kube-scheduler
+#   - --authentication-kubeconfig=/etc/kubernetes/scheduler.conf
+#   - …
+#   - --leader-elect=true            ← żadnego --config
+```
+
+</div>
+
+* działa wtedy z ustawieniami **domyślnymi**: jeden profil `default-scheduler`, punktacja `LeastAllocated`
+* własne ustawienia podaje plik **`KubeSchedulerConfiguration`**
+* na kubeadm plik trafia do static Poda schedulera: flaga `--config` plus wolumen `hostPath` z tym plikiem
+
+---
+
+# Dwa profile w jednym schedulerze
 
 <div data-marpit-fragment>
 
@@ -202,7 +220,6 @@ profiles:
 
 > `LeastAllocated` rozkłada Pody na najluźniejsze node'y, `MostAllocated`
 > upycha je na najbardziej zajętych — tak, żeby puste maszyny dało się wyłączyć.
-> Na kubeadm plik trafia do static Poda: flaga `--config` plus wolumen `hostPath`.
 
 </div>
 
