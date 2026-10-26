@@ -865,7 +865,7 @@ wypelniacz  Preempted: Preempted by pod 8fc10cc8-… on node lfs458-control-plan
 
 <div data-marpit-fragment>
 
-**20 punktów + 3 dodatkowe**
+**25 punktów + 3 dodatkowe**
 
 </div>
 
@@ -882,8 +882,9 @@ labctl lab 11
 Przypniesz Pod etykietą node'a, **celowo utworzysz Pod nie do zaplanowania**
 i odczytasz powód ze zdarzeń, rozproszysz repliki anti-affinity `required`,
 zarezerwujesz node taintem i trafisz na niego Podem z `toleration`,
-w zadaniu dodatkowym zobaczysz, że preferencja nie blokuje, a na koniec
-**HPA wyskaluje Deployment pod ruchem**, który sam wygenerujesz.
+w zadaniu dodatkowym zobaczysz, że preferencja nie blokuje, potem
+**HPA wyskaluje Deployment pod ruchem**, który sam wygenerujesz, a na koniec
+odczytasz klasy QoS i nadasz Podowi priorytet.
 
 </div>
 

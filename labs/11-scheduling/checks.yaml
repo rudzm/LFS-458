@@ -27,6 +27,13 @@ cleanup:
     timeout: 3m
     script: |
       kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m11 --ignore-not-found --wait=true
+  - name: "Usuwam namespace quizu i PriorityClass"
+    timeout: 3m
+    ignoreError: true
+    script: |
+      K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+      $K delete namespace lfs458-m11-quiz --ignore-not-found --wait=true
+      $K delete priorityclass lfs458-wazne --ignore-not-found
   - name: "Zdejmuję etykiety i taints z node'ów"
     timeout: 2m
     ignoreError: true
@@ -607,3 +614,162 @@ tasks:
               echo "WYNIK: brak skalowania w górę — uruchom generator ruchu"
             fi
           stdoutMatches: "WYNIK: skalowanie w górę było"
+
+  # Quiz ma własne Pody w osobnym namespace — klasy QoS i Pod z profilem
+  # schedulera, którego nikt nie obsługuje (sekcje 2 i 3 rozdziału).
+  - id: task-8
+    points: 2
+    description: |
+      **Odczytaj, jak klaster potraktował Pody.**
+
+      `labctl` utworzył w `lfs458-m11-quiz` cztery Pody o różnych ustawieniach.
+      Cztery pytania — odpowiedzi czytasz z klastra.
+
+      ```bash
+      kubectl get pods -n lfs458-m11-quiz
+      ```
+    quiz:
+      przygotuj:
+        timeout: 3m
+        script: |
+          K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+          $K create namespace lfs458-m11-quiz --dry-run=client -o yaml | $K apply -f - >/dev/null
+          cat <<'YAML' | $K apply -f - >/dev/null
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: tylko-requests, namespace: lfs458-m11-quiz}
+          spec:
+            containers:
+              - {name: web, image: nginx:1.27-alpine, resources: {requests: {cpu: 50m, memory: 64Mi}}}
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: tylko-limity, namespace: lfs458-m11-quiz}
+          spec:
+            containers:
+              - {name: web, image: nginx:1.27-alpine, resources: {limits: {cpu: 100m, memory: 128Mi}}}
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: bez-zasobow, namespace: lfs458-m11-quiz}
+          spec:
+            containers:
+              - {name: web, image: nginx:1.27-alpine}
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: sierota, namespace: lfs458-m11-quiz}
+          spec:
+            schedulerName: upakuj
+            containers:
+              - {name: web, image: nginx:1.27-alpine}
+          YAML
+          sleep 5
+      pytania:
+        - pytanie: |
+            Jaką klasę QoS ma Pod `tylko-requests`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pod tylko-requests -n lfs458-m11-quiz \
+                -o jsonpath='{.status.qosClass}'
+          mylne: ["BestEffort", "Guaranteed", "Burstable"]
+          wskazowka: "kubectl get pod tylko-requests -n lfs458-m11-quiz -o jsonpath='{.status.qosClass}'"
+
+        - pytanie: |
+            A jaką klasę QoS ma Pod `tylko-limity` — z samymi `limits`, bez `requests`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pod tylko-limity -n lfs458-m11-quiz \
+                -o jsonpath='{.status.qosClass}'
+          mylne: ["BestEffort", "Burstable", "Guaranteed"]
+          wskazowka: "sprawdź klasę — i zajrzyj, jakie `requests` zapisał apiserver: kubectl get pod tylko-limity -n lfs458-m11-quiz -o yaml | grep -A6 resources"
+
+        - pytanie: |
+            W jakim stanie jest Pod `sierota`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get pod sierota -n lfs458-m11-quiz \
+                -o jsonpath='{.status.phase}'
+          mylne: ["Running", "Failed", "Unknown"]
+          wskazowka: "kubectl get pod sierota -n lfs458-m11-quiz"
+
+        - pytanie: |
+            Ile zdarzeń (`Events`) zapisał klaster dla Poda `sierota`?
+          odpowiedz:
+            script: |
+              kubectl --context "${KUBECONTEXT:-kind-lfs458}" get events -n lfs458-m11-quiz \
+                --field-selector involvedObject.name=sierota --no-headers 2>/dev/null | wc -l | tr -d ' '
+          mylne: ["1", "2", "3"]
+          wskazowka: "kubectl describe pod sierota -n lfs458-m11-quiz — i sprawdź jego spec.schedulerName"
+
+  - id: task-9
+    points: 3
+    description: |
+      **Nadaj Podowi priorytet.**
+
+      1. Utwórz PriorityClass **`lfs458-wazne`** o wartości **100000**.
+      2. W `lfs458-m11` utwórz Poda **`wazny`** (`nginx:1.27-alpine`),
+         który z niej korzysta.
+      3. Zobacz, co apiserver zapisał w Podzie:
+
+      ```bash
+      kubectl get pod wazny -n lfs458-m11 -o jsonpath='{.spec.priorityClassName} {.spec.priority}{"\n"}'
+      ```
+
+      > PriorityClass jest obiektem **klastrowym** — nie ma namespace'u.
+    hints:
+      - "Najprościej: `kubectl create priorityclass lfs458-wazne --value=100000`."
+      - "W Podzie wystarczy pole `spec.priorityClassName: lfs458-wazne`; liczbę w `spec.priority` dopisze sam apiserver przy tworzeniu Poda."
+    solution: |
+      ```bash
+      kubectl create priorityclass lfs458-wazne --value=100000 \
+        --description="lab 11"
+
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata: {name: wazny, namespace: lfs458-m11}
+      spec:
+        priorityClassName: lfs458-wazne
+        containers:
+          - {name: web, image: nginx:1.27-alpine}
+      EOF
+
+      kubectl get pod wazny -n lfs458-m11 \
+        -o jsonpath='{.spec.priorityClassName} {.spec.priority}{"\n"}'
+      # lfs458-wazne 100000
+      ```
+    checks:
+      - name: "PriorityClass lfs458-wazne ma wartość 100000"
+        resource:
+          apiVersion: scheduling.k8s.io/v1
+          kind: PriorityClass
+          name: lfs458-wazne
+        assert:
+          - path: "{.value}"
+            op: eq
+            value: 100000
+      - name: "Pod wazny korzysta z tej klasy i działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m11
+          name: wazny
+        assert:
+          - path: "{.spec.priorityClassName}"
+            op: eq
+            value: lfs458-wazne
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+      - name: "apiserver wpisał priorytet do spec.priority"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m11
+          name: wazny
+        assert:
+          - path: "{.spec.priority}"
+            op: eq
+            value: 100000
+            message: "priorytet ustala się przy tworzeniu Poda — Pod utworzony przed PriorityClass trzeba utworzyć ponownie"

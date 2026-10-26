@@ -1,6 +1,6 @@
 # Lab 11 — sterowanie rozmieszczeniem
 
-**20 punktów obowiązkowych + 3 dodatkowe**
+**25 punktów obowiązkowych + 3 dodatkowe**
 
 ## Cel
 
@@ -35,6 +35,8 @@ kubectl get pods -n lfs458-m11 -o wide
 | 5 | *(dodatkowe)* `preferred`, czyli preferencja bez blokowania | 3 |
 | 6 | **Pytania ABCD** — taints, efekty, gdzie stanie Pod | 2 |
 | 7 | HPA dla Deploymentu `skalowany` i skalowanie pod ruchem | 4 |
+| 8 | **Pytania ABCD** — klasy QoS i Pod z nieobsługiwanym `schedulerName` | 2 |
+| 9 | PriorityClass `lfs458-wazne` i Pod, który z niej korzysta | 3 |
 
 ## Na co zwrócić uwagę
 
@@ -51,6 +53,12 @@ kubectl get pods -n lfs458-m11 -o wide
 - **Zadanie 7** — przez pierwszą minutę HPA pokazuje `<unknown>`: metrics-server
   jeszcze nie zebrał danych. W górę skaluje po kilkudziesięciu sekundach ruchu,
   w dół dopiero po około 5 minutach — to celowe opóźnienie, nie awaria.
+- **Zadanie 8** — Pod z samymi `limits` ma klasę Guaranteed, bo apiserver
+  przepisał `limits` do `requests`. A Pod `sierota` nie ma żadnych zdarzeń:
+  żaden scheduler nie obsługuje jego `schedulerName`, więc nikt go nie widzi.
+- **Zadanie 9** — `spec.priority` wpisuje apiserver przy tworzeniu Poda.
+  Pod utworzony przed PriorityClass nie dostanie priorytetu — trzeba go
+  utworzyć od nowa.
 
 ## Sprzątanie
 

@@ -160,5 +160,22 @@ until [ "$(k get hpa skalowany -n "$NS" -o jsonpath='{.status.desiredReplicas}' 
 k get hpa skalowany -n "$NS"
 k delete pod obciazenie -n "$NS" --wait=false
 
+echo "→ zadanie 8: pytania o klasy QoS i Poda sierota — odpowiadasz w labctl lab"
+echo "   tylko-requests: Burstable, tylko-limity: Guaranteed, sierota: Pending, 0 zdarzeń"
+
+echo "→ zadanie 9: PriorityClass"
+k create priorityclass lfs458-wazne --value=100000 --description="lab 11" 2>/dev/null || true
+cat <<'YAML' | k apply -f -
+apiVersion: v1
+kind: Pod
+metadata: {name: wazny, namespace: lfs458-m11}
+spec:
+  priorityClassName: lfs458-wazne
+  containers:
+    - {name: web, image: nginx:1.27-alpine}
+YAML
+k wait --for=condition=Ready pod/wazny -n "$NS" --timeout=120s
+k get pod wazny -n "$NS" -o jsonpath='   {.spec.priorityClassName} {.spec.priority}{"\n"}'
+
 echo
 echo "Gotowe. Weryfikacja: labctl check 11"
