@@ -251,5 +251,39 @@ spec:
 YAML
 k wait --for=condition=Ready pod/z-rejestru -n "$NS" --timeout=180s
 
+echo "→ zadanie 9: Downward API"
+cat <<'EOF' | k apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kim-jestem
+  namespace: lfs458-m08
+  labels: {wersja: "1"}
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sleep", "3600"]
+      env:
+        - name: MOJ_POD
+          valueFrom: {fieldRef: {fieldPath: metadata.name}}
+        - name: MOJ_NODE
+          valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+      volumeMounts:
+        - {name: info, mountPath: /etc/info}
+  volumes:
+    - name: info
+      downwardAPI:
+        items:
+          - path: etykiety
+            fieldRef: {fieldPath: metadata.labels}
+EOF
+k wait --for=condition=Ready pod/kim-jestem -n "$NS" --timeout=60s
+k exec -n "$NS" kim-jestem -- sh -c 'echo $MOJ_POD $MOJ_NODE'
+
+k label pod kim-jestem -n "$NS" wersja=2 --overwrite
+sleep 10
+k exec -n "$NS" kim-jestem -- cat /etc/info/etykiety   # wersja="2"
+
 echo
 echo "Gotowe. Weryfikacja: labctl check 08"

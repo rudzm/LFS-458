@@ -1,6 +1,6 @@
 # Lab 08 — dane w klastrze
 
-**22 punkty obowiązkowe + 6 dodatkowych**
+**25 punktów obowiązkowych + 6 dodatkowych**
 
 ## Cel
 
@@ -50,6 +50,7 @@ w zadaniu 2.
 | 6 | Dowód trwałości — nowy Pod, te same dane | 3 |
 | 7 | *(dodatkowe)* statyczny PV związany z PVC bez klasy | 3 |
 | 8 | *(dodatkowe)* `imagePullSecrets` i typ `dockerconfigjson` | 3 |
+| 9 | Downward API — nazwa Poda i node w zmiennych, etykiety w pliku | 3 |
 
 ## Na co zwrócić uwagę
 
@@ -79,6 +80,10 @@ w zadaniu 2.
 - **Zadanie 8** — obraz bierzemy publiczny, więc `imagePullSecrets` nie jest
   tu do niczego potrzebne; ćwiczysz **poprawne podłączenie**. W praktyce
   wygodniej dopiąć Secret do ServiceAccounta, niż wpisywać go do każdego Poda.
+- **Zadanie 9** — po zmianie etykiety plik z wolumenu `downwardAPI` pokazuje
+  nową wartość po kilku sekundach, a zmienna środowiskowa nigdy: dostaje
+  wartość raz, przy starcie kontenera. Ta sama różnica co przy ConfigMapie
+  z zadania 3.
 
 ## Sprzątanie
 

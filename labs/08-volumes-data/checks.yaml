@@ -816,3 +816,120 @@ tasks:
           - path: "{.status.phase}"
             op: eq
             value: Running
+
+  - id: task-9
+    points: 3
+    description: |
+      **Niech Pod powie aplikacji, kim jest.**
+
+      W `lfs458-m08` utwórz Poda **`kim-jestem`** (`busybox:1.36`,
+      polecenie `sleep 3600`, etykieta **`wersja=1`**), który przez
+      **Downward API** dostaje:
+
+      | Gdzie | Co |
+      |---|---|
+      | zmienna `MOJ_POD` | nazwę Poda |
+      | zmienna `MOJ_NODE` | node, na którym działa |
+      | plik `/etc/info/etykiety` | etykiety Poda (wolumen `downwardAPI`) |
+
+      Potem zmień etykietę na **`wersja=2`** i porównaj, co pokazuje zmienna,
+      a co plik:
+
+      ```bash
+      kubectl label pod kim-jestem -n lfs458-m08 wersja=2 --overwrite
+      kubectl exec -n lfs458-m08 kim-jestem -- cat /etc/info/etykiety
+      ```
+    hints:
+      - "Zmienna z Downward API to `env` z `valueFrom.fieldRef.fieldPath` — np. `metadata.name` albo `spec.nodeName`."
+      - "Wolumen: `volumes` z `downwardAPI.items`, w nim `path: etykiety` i `fieldRef.fieldPath: metadata.labels`; zamontuj go w `/etc/info`."
+      - "Plik nadąża za zmianą etykiety po kilku sekundach, zmienna — nigdy: dostaje wartość raz, przy starcie kontenera."
+    solution: |
+      ```bash
+      cat <<'EOF' | kubectl apply -f -
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kim-jestem
+        namespace: lfs458-m08
+        labels: {wersja: "1"}
+      spec:
+        containers:
+          - name: app
+            image: busybox:1.36
+            command: ["sleep", "3600"]
+            env:
+              - name: MOJ_POD
+                valueFrom: {fieldRef: {fieldPath: metadata.name}}
+              - name: MOJ_NODE
+                valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            volumeMounts:
+              - {name: info, mountPath: /etc/info}
+        volumes:
+          - name: info
+            downwardAPI:
+              items:
+                - path: etykiety
+                  fieldRef: {fieldPath: metadata.labels}
+      EOF
+      kubectl wait --for=condition=Ready pod/kim-jestem -n lfs458-m08 --timeout=60s
+      kubectl exec -n lfs458-m08 kim-jestem -- sh -c 'echo $MOJ_POD $MOJ_NODE'
+
+      kubectl label pod kim-jestem -n lfs458-m08 wersja=2 --overwrite
+      sleep 10
+      kubectl exec -n lfs458-m08 kim-jestem -- cat /etc/info/etykiety   # wersja="2"
+      ```
+    checks:
+      - name: "Pod kim-jestem działa"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: kim-jestem
+        assert:
+          - path: "{.status.phase}"
+            op: eq
+            value: Running
+      - name: "zmienne MOJ_POD i MOJ_NODE pochodzą z Downward API"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: kim-jestem
+        assert:
+          - path: "{.spec.containers[0].env[?(@.name==\"MOJ_POD\")].valueFrom.fieldRef.fieldPath}"
+            op: eq
+            value: metadata.name
+            message: "MOJ_POD ma brać wartość z fieldRef metadata.name, a nie być wpisana na sztywno"
+          - path: "{.spec.containers[0].env[?(@.name==\"MOJ_NODE\")].valueFrom.fieldRef.fieldPath}"
+            op: eq
+            value: spec.nodeName
+      - name: "etykiety trafiają do pliku przez wolumen downwardAPI"
+        resource:
+          apiVersion: v1
+          kind: Pod
+          namespace: lfs458-m08
+          name: kim-jestem
+        assert:
+          - path: "{.spec.volumes[*].downwardAPI.items[*].fieldRef.fieldPath}"
+            op: eq
+            value: metadata.labels
+          # Pod ma też punkt montowania tokenu ServiceAccounta — wystarczy jeden pasujący.
+          - path: "{.spec.containers[0].volumeMounts[*].mountPath}"
+            op: eq
+            value: /etc/info
+            quantifier: any
+      - name: "kontener widzi swoją nazwę, a plik — zmienioną etykietę"
+        exec:
+          timeout: 40s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            POD=$($K exec -n lfs458-m08 kim-jestem -- sh -c 'echo $MOJ_POD' 2>/dev/null)
+            PLIK=$($K exec -n lfs458-m08 kim-jestem -- cat /etc/info/etykiety 2>/dev/null)
+            if [ "$POD" != "kim-jestem" ]; then
+              echo "WYNIK: MOJ_POD='$POD'"
+            elif ! printf '%s' "$PLIK" | grep -q 'wersja="2"'; then
+              echo "WYNIK: w pliku nie ma wersja=\"2\" — zmień etykietę i odczekaj kilka sekund"
+            else
+              echo "WYNIK: ok"
+            fi
+          stdoutMatches: "WYNIK: ok"

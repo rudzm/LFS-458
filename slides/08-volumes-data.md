@@ -716,7 +716,7 @@ do semantyki zmiennej środowiskowej.
 
 <div data-marpit-fragment>
 
-**22 punkty + 6 dodatkowych**
+**25 punktów + 6 dodatkowych**
 
 </div>
 
@@ -733,7 +733,8 @@ labctl lab 08
 Połączysz dwa kontenery wspólnym `emptyDir`, poprosisz o trwały wolumen
 i **udowodnisz jego trwałość** — usuwając Pod i tworząc nowy, podasz
 konfigurację dwoma kanałami naraz, a Secret **wszystkimi trzema**: jako
-zmienne, jako pliki z prawami `0400` i jako `imagePullSecrets`.
+zmienne, jako pliki z prawami `0400` i jako `imagePullSecrets`. Na koniec
+Pod przez **Downward API** dowie się, jak się nazywa i gdzie działa.
 
 </div>
 
