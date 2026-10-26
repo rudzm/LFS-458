@@ -1,6 +1,6 @@
 # Lab 11 — sterowanie rozmieszczeniem
 
-**16 punktów obowiązkowych + 3 dodatkowe**
+**20 punktów obowiązkowych + 3 dodatkowe**
 
 ## Cel
 
@@ -34,6 +34,7 @@ kubectl get pods -n lfs458-m11 -o wide
 | 4 | `taint` + `toleration` | 4 |
 | 5 | *(dodatkowe)* `preferred`, czyli preferencja bez blokowania | 3 |
 | 6 | **Pytania ABCD** — taints, efekty, gdzie stanie Pod | 2 |
+| 7 | HPA dla Deploymentu `skalowany` i skalowanie pod ruchem | 4 |
 
 ## Na co zwrócić uwagę
 
@@ -47,6 +48,9 @@ kubectl get pods -n lfs458-m11 -o wide
 - **Zadanie 4** — `toleration` to **zgoda**, nie przyciąganie. Sam wpis
   pozwoli Podowi wylądować gdziekolwiek; żeby trafił na konkretny node,
   potrzebny jest jeszcze `nodeSelector`.
+- **Zadanie 7** — przez pierwszą minutę HPA pokazuje `<unknown>`: metrics-server
+  jeszcze nie zebrał danych. W górę skaluje po kilkudziesięciu sekundach ruchu,
+  w dół dopiero po około 5 minutach — to celowe opóźnienie, nie awaria.
 
 ## Sprzątanie
 

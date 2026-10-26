@@ -24,10 +24,11 @@ i jak na tę decyzję wpłynąć
 1. **Przegląd** — dwie fazy decyzji
 2. **Ustawienia schedulera** — czym można pokręcić
 3. **Specyfikacja Poda** — `nodeName`, `nodeSelector`, zasoby i klasy QoS
-4. **Affinity** — warianty `required` i `preferred`
-5. **Taints i tolerations** — odpychanie zamiast przyciągania
-6. **Priorytety i preemption** — kto komu ustępuje miejsca
-7. **Lab 11** — pięć mechanizmów rozmieszczania
+4. **Autoskalowanie** — HPA dokłada repliki, VPA powiększa Pody
+5. **Affinity** — warianty `required` i `preferred`
+6. **Taints i tolerations** — odpychanie zamiast przyciągania
+7. **Priorytety i preemption** — kto komu ustępuje miejsca
+8. **Lab 11** — mechanizmy rozmieszczania i autoskalowanie
 
 </div>
 
@@ -398,7 +399,129 @@ kubectl label node lfs458-worker2 dysk=ssd   # potem: nodeSelector: {dysk: ssd}
 
 <!-- _class: sekcja -->
 
-# 4. Affinity
+# 4. Autoskalowanie — HPA i VPA
+
+---
+
+# HPA — więcej replik, gdy rośnie obciążenie
+
+<div class="kolumny">
+<div>
+
+<div data-marpit-fragment>
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: skalowany}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skalowany
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization,
+                 averageUtilization: 50}
+```
+
+</div>
+
+</div>
+<div>
+
+<div data-marpit-fragment>
+
+```bash
+kubectl autoscale deployment skalowany \
+  --cpu=50% --min=1 --max=5
+```
+
+</div>
+
+* procent liczony jest od **`requests`** — przy `cpu: 20m` cel 50% to 10m na Pod
+* bez `requests` HPA nie ma od czego liczyć: `missing request for cpu`
+* dane bierze z **metrics-server**
+* repliki = `ceil(bieżące × zużycie / cel)`, w granicach `min`–`max`
+
+</div>
+</div>
+
+---
+
+# HPA w praktyce
+
+<div data-marpit-fragment>
+
+```text
+$ kubectl get hpa skalowany -w
+NAME        REFERENCE              TARGETS              MINPODS   MAXPODS   REPLICAS
+skalowany   Deployment/skalowany   cpu: <unknown>/50%   1         5         1     ← metryki jeszcze nie spłynęły
+skalowany   Deployment/skalowany   cpu: 97%/50%         1         5         5
+
+$ kubectl describe hpa skalowany | sed -n '/Events/,$p'
+  Normal  SuccessfulRescale  New size: 5; reason: cpu resource utilization
+                             (percentage of request) above target
+```
+
+</div>
+
+* **w górę szybko** — tu około 20 s od startu ruchu
+* **w dół ostrożnie** — domyślnie 5 minut stabilizacji, żeby nie skakać przy chwilowych spadkach (`behavior.scaleDown.stabilizationWindowSeconds`)
+* ręczne `kubectl scale` przy działającym HPA nic nie da — HPA ustawi swoje
+
+---
+
+# VPA — większe Pody zamiast większej ich liczby
+
+<div class="kolumny">
+<div>
+
+<div data-marpit-fragment>
+
+```yaml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata: {name: baza}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: baza
+  updatePolicy: {updateMode: "Off"}
+```
+
+</div>
+
+</div>
+<div>
+
+<div data-marpit-fragment>
+
+| `updateMode` | Co robi |
+|---|---|
+| `Off` | tylko rekomendacje |
+| `Initial` | tylko nowym Podom |
+| `Recreate` | przez nowy Pod |
+| `InPlaceOrRecreate` | w locie, gdy się da |
+
+</div>
+
+</div>
+</div>
+
+* VPA **nie jest częścią Kubernetesa** — osobny projekt `kubernetes/autoscaler`
+* nie łącz z HPA na tym samym CPU czy pamięci; zmiana w locie nie zmieni **klasy QoS** (sekcja 3)
+
+---
+
+<!-- _class: sekcja -->
+
+# 5. Affinity
 
 ---
 
@@ -519,7 +642,7 @@ pozwala powiedzieć „rozproszenie, ale dopuszczam odchylenie o jeden”.
 
 <!-- _class: sekcja -->
 
-# 5. Taints i tolerations
+# 6. Taints i tolerations
 
 ---
 
@@ -640,7 +763,7 @@ kubectl taint node lfs458-control-plane node-role.kubernetes.io/control-plane:No
 
 <!-- _class: sekcja -->
 
-# 6. Priorytety i preemption
+# 7. Priorytety i preemption
 
 ---
 
@@ -742,7 +865,7 @@ wypelniacz  Preempted: Preempted by pod 8fc10cc8-… on node lfs458-control-plan
 
 <div data-marpit-fragment>
 
-**16 punktów + 3 dodatkowe**
+**20 punktów + 3 dodatkowe**
 
 </div>
 
@@ -759,7 +882,8 @@ labctl lab 11
 Przypniesz Pod etykietą node'a, **celowo utworzysz Pod nie do zaplanowania**
 i odczytasz powód ze zdarzeń, rozproszysz repliki anti-affinity `required`,
 zarezerwujesz node taintem i trafisz na niego Podem z `toleration`,
-a w zadaniu dodatkowym zobaczysz, że preferencja nie blokuje.
+w zadaniu dodatkowym zobaczysz, że preferencja nie blokuje, a na koniec
+**HPA wyskaluje Deployment pod ruchem**, który sam wygenerujesz.
 
 </div>
 
@@ -782,6 +906,7 @@ a w zadaniu dodatkowym zobaczysz, że preferencja nie blokuje.
 * anti-affinity `required` przy `maxSurge: 1` potrafi zakleszczyć rollout
 * **taint odpycha, toleration tylko się zgadza** — przyciąga `nodeSelector`
 * klasa QoS wynika z `requests` i `limits`: Guaranteed ginie ostatni, BestEffort pierwszy
+* HPA liczy procent od `requests` i dokłada repliki; VPA zmienia same `requests`
 * `PriorityClass` ustala kolejkę i to, kogo scheduler wywłaszczy — przed OOM nie chroni
 * `schedulerName` wskazuje profil; nazwa bez schedulera = `Pending` bez zdarzeń
 

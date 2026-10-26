@@ -45,7 +45,7 @@ i co naprawdę dzieje się pod spodem
 | Pod utworzony ręcznie | Pod z Deploymentu |
 |---|---|
 | padnie node → **znika na zawsze** | kontroler tworzy go gdzie indziej |
-| skalowanie → ręcznie, po jednym | `kubectl scale --replicas=10` |
+| skalowanie → ręcznie, po jednym | `kubectl scale --replicas=10` albo HPA (rozdz. 11) |
 | nowa wersja → usuń i utwórz | `rollout` wymienia stopniowo |
 | błąd w nowej wersji → odtwórz ze starego YAML-a | `rollout undo` |
 
