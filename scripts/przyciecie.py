@@ -70,10 +70,12 @@ def renderuj() -> list[str]:
     marp = subprocess.run(["bash", "-c", "command -v marp || echo 'npx marp'"],
                           capture_output=True, text=True).stdout.strip()
     def jedna(md: pathlib.Path) -> None:
-        subprocess.run([*marp.split(), "--config-file", ".marprc.yml",
+        # --no-stdin: bez terminala na wejściu marp czeka na dane ze stdin
+        # i potrafi tak wisieć bez końca, mimo podanego pliku.
+        subprocess.run([*marp.split(), "--no-stdin", "--config-file", ".marprc.yml",
                         "--allow-local-files", "--images", "png",
                         "-o", str(PNG / f"{md.stem}.png"), str(md)],
-                       cwd=ROOT, capture_output=True)
+                       cwd=ROOT, capture_output=True, stdin=subprocess.DEVNULL)
 
     # Każda talia to osobna instancja Chromium, więc po kolei trwa to
     # kilkadziesiąt minut. Puszczamy po kilka naraz — wąskim gardłem jest

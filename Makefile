@@ -47,11 +47,11 @@ test: ## testy silnika sprawdzającego i walidacja materiałów
 
 slides: ## prezentacje → build/pdf
 	@mkdir -p build/pdf
-	$(MARP) --config-file .marprc.yml --pdf --pdf-outlines --allow-local-files -I slides -o build/pdf
+	$(MARP) --no-stdin --config-file .marprc.yml --pdf --pdf-outlines --allow-local-files -I slides -o build/pdf
 
 slides-html: ## prezentacje → build/html (działa offline)
 	@mkdir -p build/html
-	$(MARP) --config-file .marprc.yml --allow-local-files -I slides -o build/html
+	$(MARP) --no-stdin --config-file .marprc.yml --allow-local-files -I slides -o build/html
 	@cp slides/nawigacja.js build/html/   # przechodzenie między rozdziałami
 	@./scripts/indeks.py                  # spis rozdziałów (tryb serwera ma własny)
 

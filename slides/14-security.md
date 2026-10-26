@@ -124,16 +124,14 @@ Kubernetes **nie ma obiektu „użytkownik”**. Tożsamość przychodzi z zewn�
 | **ServiceAccount token** | JWT montowany do Poda | workloady w klastrze |
 | OIDC | token od dostawcy tożsamości | ludzie w organizacji |
 | webhook | zewnętrzna usługa decyduje | integracje nietypowe |
+| static token file | linia w pliku CSV na node'ie control plane | testy, laby |
 
 </div>
 
 <div data-marpit-fragment>
 
 ```bash
-kubectl auth whoami
-kubectl -n kube-system get pod -l component=kube-apiserver \
-  -o jsonpath='{.items[0].spec.containers[0].command}' | tr ',' '\n' | grep authoriz
-# --authorization-mode=Node,RBAC
+kubectl auth whoami      # kim jestem dla apiservera: nazwa, grupy
 ```
 
 </div>
@@ -273,6 +271,89 @@ Kubernetes **nie rozmawia** z LDAP-em, AD ani Kerberosem — potrzebny jest poś
 
 > Logowanie w przeglądarce do `kubectl` dokłada plugin `kubelogin`. Każda droga
 > kończy się nazwą i grupami — dalej decyduje RBAC, jak przy certyfikatach.
+
+</div>
+
+---
+
+# Static token file — token z pliku
+
+<div class="kolumny">
+<div>
+
+<div data-marpit-fragment>
+
+```text
+# /etc/kubernetes/tokeny.csv
+# token,użytkownik,uid,"grupy"
+b4rt3k-t0k3n-9f2c1a7e,bartek,1001,"zespol-sklep,deweloperzy"
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+```yaml
+    - --token-auth-file=/etc/kubernetes/tokeny.csv
+    # + plik podmontowany do static Poda
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+```bash
+kubectl config set-credentials bartek \
+  --token=b4rt3k-t0k3n-9f2c1a7e
+```
+
+</div>
+
+</div>
+<div>
+
+<div data-marpit-fragment>
+
+```text
+$ kubectl auth whoami
+Username    bartek
+UID         1001
+Groups      [zespol-sklep deweloperzy
+             system:authenticated]
+```
+
+</div>
+
+* klient wysyła token w nagłówku `Authorization: Bearer …`
+* zły token → **401**; dobry, ale bez RBAC → **403**
+
+</div>
+</div>
+
+---
+
+# Dlaczego static token file to tylko laby
+
+<div data-marpit-fragment>
+
+```text
+# z pliku usunięto token bartka i dopisano token celiny — bez restartu apiservera
+$ kubectl --token=c3l1n4-… auth whoami
+error: You must be logged in to the server (Unauthorized)      ← nowy nie działa
+$ kubectl --token=b4rt3k-… auth whoami
+Username    bartek                                             ← usunięty działa dalej
+```
+
+</div>
+
+* plik czytany jest **tylko przy starcie** — każda zmiana to restart apiservera
+* tokeny leżą **jawnym tekstem** na każdym node'ie control plane i **nie wygasają**
+* wykradzionego tokenu nie unieważnisz inaczej niż edycją pliku i restartem
+
+<div data-marpit-fragment>
+
+> Ta sama słabość co w ABAC: konfiguracja w pliku zamiast w API. Do ludzi —
+> certyfikaty z krótką ważnością albo OIDC; do workloadów — tokeny ServiceAccount.
 
 </div>
 
@@ -842,7 +923,8 @@ Na koniec zmienisz zestaw pluginów admission i zobaczysz skutek na Podzie.
 * użytkownicy nie są obiektami; ServiceAccount jest
 * użytkownik z certyfikatu: `CN` = nazwa, `O` = grupa; wniosek zatwierdza
   administrator, a certyfikatu nie da się odwołać
-* ABAC trzyma reguły w pliku — każda zmiana to restart apiservera; dlatego RBAC
+* ABAC i static token file trzymają konfigurację w pliku — każda zmiana to restart
+  apiservera; dlatego RBAC, certyfikaty, OIDC i tokeny ServiceAccount
 
 ---
 
