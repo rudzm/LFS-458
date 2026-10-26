@@ -484,7 +484,7 @@ labctl lab 99
 
 Zadanie zamykające szkolenie: jedna usługa, wdrożona od zera tak, jak
 na produkcji — limity namespace'u, konfiguracja i Secret poza obrazem,
-utwardzone kontenery, rozproszenie replik, Ingress, NetworkPolicy,
+zabezpieczone kontenery, rozproszenie replik, Ingress, NetworkPolicy,
 PodDisruptionBudget i wydanie bez przestoju.
 
 </div>

@@ -511,6 +511,7 @@ albo znaczy co innego.
 | „na koniec dnia" | *at the end of the day* | „ostatecznie", „w praktyce" |
 | „obciążenie" o aplikacji | po polsku znaczy **zużycie zasobów**, nie *workload* | `workload` |
 | „tożsamość dla obciążenia" | *identity for workload* | `ServiceAccount` albo `identity` |
+| „utwardzony", „utwardzanie" | *hardened*, *hardening* — po polsku utwardza się beton | „zabezpieczony", `hardening` |
 
 Wyjątki — te same słowa bywają poprawne w innym znaczeniu:
 

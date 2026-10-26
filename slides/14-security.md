@@ -12,7 +12,7 @@ footer: 'LFS458 · rozdział 14 · Security'
 
 ## Rozdział 14 · lab `14`
 
-Kubernetes domyślnie nie jest utwardzony —
+Świeżo postawiony Kubernetes nie jest zabezpieczony —
 i to jest świadoma decyzja projektowa
 
 ---
@@ -26,7 +26,7 @@ i to jest świadoma decyzja projektowa
 3. **Uwierzytelnianie i autoryzacja** — kim jesteś, co możesz
 4. **Admission controllers** — ostatnie słowo przed zapisem, limity namespace'u
 5. **Network policies** — izolacja ruchu między Podami
-6. **Lab 14** — utwardzasz klaster
+6. **Lab 14** — zabezpieczasz klaster
 
 </div>
 
@@ -56,7 +56,7 @@ i to jest świadoma decyzja projektowa
 
 > To nie są błędy. Kubernetes dostarcza **mechanizmy**, nie gotową politykę —
 > bo polityka zależy od tego, co i dla kogo uruchamiasz.
-> Utwardzanie jest Twoją pracą.
+> Hardening jest Twoją pracą.
 
 </div>
 
@@ -457,7 +457,7 @@ kubectl run zly --image=nginx -n produkcja --privileged --dry-run=server
 
 ---
 
-# Utwardzony kontener
+# Hardening kontenera
 
 <div data-marpit-fragment>
 
@@ -600,7 +600,7 @@ labctl lab 14
 
 <div data-marpit-fragment>
 
-Utwardzisz Poda pełnym `securityContext`, włączysz Pod Security Admission
+Zabezpieczysz Poda pełnym `securityContext`, włączysz Pod Security Admission
 na poziomie `restricted` i sprawdzisz, że namespace odrzuca uprzywilejowany
 Pod, a potem zbudujesz scenę z trzema Podami i **doświadczalnie udowodnisz**,
 że NetworkPolicy blokuje jednego klienta, a drugiego przepuszcza.
@@ -619,7 +619,7 @@ Na koniec zmienisz zestaw pluginów admission i zobaczysz skutek na Podzie.
 
 # Co warto zapamiętać
 
-* Kubernetes daje mechanizmy, nie politykę — utwardzanie jest Twoją pracą
+* Kubernetes daje mechanizmy, nie politykę — hardening jest Twoją pracą
 * **401** = uwierzytelnianie, **403** = autoryzacja
 * użytkownicy nie są obiektami; ServiceAccount jest
 * admission: najpierw mutating, potem validating

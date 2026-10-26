@@ -433,7 +433,7 @@ w API i usłyszy „nie wolno".
 
 > Jeśli Pod w ogóle nie potrzebuje API, odetnij mu token:
 > `automountServiceAccountToken: false` — w `spec` Poda albo w samym
-> ServiceAccouncie. To jedna z pierwszych rzeczy na liście utwardzania.
+> ServiceAccouncie. To jedna z pierwszych pozycji na liście hardeningu.
 
 </div>
 

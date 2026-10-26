@@ -6,13 +6,13 @@ CTX="${KUBECONTEXT:-kind-lfs458}"
 NS=lfs458-m14
 k() { kubectl --context "$CTX" "$@"; }
 
-echo "→ zadanie 1: utwardzony Pod"
+echo "→ zadanie 1: zabezpieczony Pod"
 k create namespace "$NS" --dry-run=client -o yaml | k apply -f -
 cat <<'YAML' | k apply -f -
 apiVersion: v1
 kind: Pod
 metadata:
-  name: utwardzony
+  name: zabezpieczony
   namespace: lfs458-m14
 spec:
   securityContext:
@@ -39,8 +39,8 @@ spec:
     - {name: run, emptyDir: {}}
     - {name: tmp, emptyDir: {}}
 YAML
-k wait --for=condition=Ready pod/utwardzony -n "$NS" --timeout=180s
-echo "   UID procesu w kontenerze: $(k exec -n "$NS" utwardzony -- id -u)"
+k wait --for=condition=Ready pod/zabezpieczony -n "$NS" --timeout=180s
+echo "   UID procesu w kontenerze: $(k exec -n "$NS" zabezpieczony -- id -u)"
 
 echo "→ zadanie 2: Pod Security Admission"
 k create namespace lfs458-m14-scisly --dry-run=client -o yaml | k apply -f -

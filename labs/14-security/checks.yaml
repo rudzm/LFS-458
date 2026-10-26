@@ -1,5 +1,5 @@
 module: "14"
-title: "Security — utwardzanie klastra"
+title: "Security — zabezpieczanie klastra"
 chapter: 14
 chapterTitle: "Security"
 day: 4
@@ -8,7 +8,7 @@ environment: kind-basic
 apiBywaNiedostepne: true
 
 intro: |
-  Kubernetes domyślnie nie jest utwardzony: kontenery działają jako root,
+  Świeżo postawiony Kubernetes nie jest zabezpieczony: kontenery działają jako root,
   każdy Pod rozmawia z każdym, a Secrety leżą w etcd otwartym tekstem.
   W tym labie dokładasz to, czego brakuje.
 
@@ -63,9 +63,9 @@ tasks:
   - id: task-1
     points: 4
     description: |
-      **Utwardź Poda.**
+      **Zabezpiecz Poda.**
 
-      W namespace `lfs458-m14` utwórz Poda **`utwardzony`**
+      W namespace `lfs458-m14` utwórz Poda **`zabezpieczony`**
       (`nginx:1.27-alpine`) spełniającego wszystkie warunki:
 
       | Ustawienie | Wartość |
@@ -79,7 +79,7 @@ tasks:
 
       > Nginx potrzebuje katalogów do zapisu, a system plików jest tylko do
       > odczytu. Podmontuj `emptyDir` w `/var/cache/nginx`, `/var/run`
-      > i `/tmp` — inaczej kontener nie wystartuje. To realna cena utwardzania.
+      > i `/tmp` — inaczej kontener nie wystartuje. To realna cena hardeningu.
     hints:
       - "`runAsNonRoot`, `runAsUser` i `seccompProfile` mogą stać na poziomie Poda (`spec.securityContext`). Reszta należy do kontenera (`spec.containers[].securityContext`)."
       - "Nginx z oficjalnego obrazu domyślnie startuje jako root i pisze do `/var/cache/nginx`. Przy `runAsUser: 10001` i systemie tylko do odczytu potrzebuje wolumenów `emptyDir` w tych miejscach."
@@ -93,7 +93,7 @@ tasks:
       apiVersion: v1
       kind: Pod
       metadata:
-        name: utwardzony
+        name: zabezpieczony
         namespace: lfs458-m14
       spec:
         securityContext:
@@ -122,23 +122,23 @@ tasks:
       EOF
       ```
     checks:
-      - name: "Pod utwardzony działa"
+      - name: "Pod zabezpieczony działa"
         resource:
           apiVersion: v1
           kind: Pod
           namespace: lfs458-m14
-          name: utwardzony
+          name: zabezpieczony
         assert:
           - path: "{.status.phase}"
             op: eq
             value: Running
-            message: "utwardzony kontener często nie wstaje za pierwszym razem — `kubectl describe` powie, czego mu brakuje"
+            message: "zabezpieczony kontener często nie wstaje za pierwszym razem — `kubectl describe` powie, czego mu brakuje"
       - name: "Pod nie działa jako root"
         resource:
           apiVersion: v1
           kind: Pod
           namespace: lfs458-m14
-          name: utwardzony
+          name: zabezpieczony
         assert:
           - path: "{.spec.securityContext.runAsNonRoot}"
             op: eq
@@ -151,7 +151,7 @@ tasks:
           apiVersion: v1
           kind: Pod
           namespace: lfs458-m14
-          name: utwardzony
+          name: zabezpieczony
         assert:
           - path: "{.spec.containers[*].securityContext.allowPrivilegeEscalation}"
             op: eq
@@ -168,7 +168,7 @@ tasks:
           apiVersion: v1
           kind: Pod
           namespace: lfs458-m14
-          name: utwardzony
+          name: zabezpieczony
         assert:
           - path: "{.spec.securityContext.seccompProfile.type}"
             op: eq
@@ -177,7 +177,7 @@ tasks:
         exec:
           timeout: 40s
           script: |
-            kubectl --context "${KUBECONTEXT:-kind-lfs458}" exec -n lfs458-m14 utwardzony \
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" exec -n lfs458-m14 zabezpieczony \
               -- id -u
           stdoutMatches: "^10001$"
 

@@ -6,7 +6,7 @@
 
 Zbudować od zera środowisko produkcyjne dla jednej usługi, spełniające
 standardy z całego szkolenia: limity i domyślne żądania, konfiguracja poza
-obrazem, utwardzone kontenery, własny ServiceAccount z minimalnym RBAC, rozproszenie
+obrazem, zabezpieczone kontenery, własny ServiceAccount z minimalnym RBAC, rozproszenie
 replik, wejście z zewnątrz, izolacja sieciowa i bezpieczne wydanie nowej wersji.
 
 ## Jak to działa
@@ -32,7 +32,7 @@ Wszystko powstaje w namespace **`sklep-prod`**, na klastrze `kind-basic`.
       ▼                           ▼
 ┌───────────┐               ┌───────────┐   ServiceAccount + RBAC
 │  api (1)  │               │  api (2)  │   ConfigMap + Secret
-└───────────┘               └───────────┘   utwardzony securityContext
+└───────────┘               └───────────┘   pełny securityContext
    node A                     node B      rozproszenie po node'ach
                                             PDB + strategia bez przestoju
 ```

@@ -8,7 +8,7 @@ intro: |
 
   Firma wdraża usługę `api`. Twoim zadaniem jest przygotować dla niej
   środowisko produkcyjne spełniające standardy, o których mówiliśmy przez
-  cztery dni: limity, konfigurację poza obrazem, utwardzone kontenery,
+  cztery dni: limity, konfigurację poza obrazem, zabezpieczone kontenery,
   rozproszenie replik, wejście z zewnątrz, izolację sieciową i możliwość
   bezpiecznego wydania nowej wersji.
 
@@ -307,7 +307,7 @@ tasks:
             op: eq
             value: 5678
             message: "wymagane są `readinessProbe` i `livenessProbe`"
-      - name: "kontener jest utwardzony"
+      - name: "kontener jest zabezpieczony"
         resource:
           apiVersion: apps/v1
           kind: Deployment

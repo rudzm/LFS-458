@@ -1,10 +1,10 @@
-# Lab 14 — utwardzanie
+# Lab 14 — zabezpieczanie klastra
 
 **22 punkty obowiązkowe + 3 dodatkowe**
 
 ## Cel
 
-Kubernetes domyślnie nie jest utwardzony: kontenery działają jako root,
+Świeżo postawiony Kubernetes nie jest zabezpieczony: kontenery działają jako root,
 każdy Pod rozmawia z każdym, Secrety leżą w etcd otwartym tekstem.
 Dokładasz to, czego brakuje.
 
@@ -16,7 +16,7 @@ Dokładasz to, czego brakuje.
 | Chcę | Polecenie |
 |---|---|
 | pola securityContext | `kubectl explain pod.spec.securityContext` |
-| UID procesu w kontenerze | `kubectl exec -n lfs458-m14 utwardzony -- id -u` |
+| UID procesu w kontenerze | `kubectl exec -n lfs458-m14 zabezpieczony -- id -u` |
 | włączyć PSA | `kubectl label ns X pod-security.kubernetes.io/enforce=restricted` |
 | sprawdzić odrzucenie | `kubectl run zly --image=nginx --privileged -n X --dry-run=server` |
 | polityki sieciowe | `kubectl get netpol -n lfs458-m14` |
@@ -28,7 +28,7 @@ Dokładasz to, czego brakuje.
 
 | # | Zadanie | Pkt |
 |---|---|---|
-| 1 | Utwardzony Pod: nie-root, RO rootfs, `drop: ALL`, seccomp | 4 |
+| 1 | Zabezpieczony Pod: nie-root, RO rootfs, `drop: ALL`, seccomp | 4 |
 | 2 | Pod Security Admission na poziomie `restricted` | 4 |
 | 3 | Scena do testu izolacji: serwer i dwaj klienci | 4 |
 | 4 | `NetworkPolicy` + **doświadczalny dowód**, że działa | 4 |
@@ -38,8 +38,8 @@ Dokładasz to, czego brakuje.
 
 ## Na co zwrócić uwagę
 
-- **Zadanie 1** — utwardzony kontener często nie wstaje za pierwszym razem.
-  To realna cena utwardzania: `readOnlyRootFilesystem` wymaga podmontowania
+- **Zadanie 1** — zabezpieczony kontener często nie wstaje za pierwszym razem.
+  To realna cena hardeningu: `readOnlyRootFilesystem` wymaga podmontowania
   `emptyDir` wszędzie tam, gdzie aplikacja pisze. `kubectl describe` powie,
   czego brakuje.
 - **Zadanie 2** — wdrażaj PSA stopniowo: najpierw `warn` i `audit`, przeczytaj,
