@@ -34,10 +34,10 @@ help: ## ta pomoc
 ## ——— stanowisko ———————————————————————————————————————————————
 
 doctor: ## sprawdza, czego brakuje na stanowisku
-	@./scripts/zainstaluj.sh --sprawdz --slajdy
+	@./scripts/zainstaluj.sh --sprawdz
 
 setup: ## doinstalowuje brakujące narzędzia do ~/.local/bin
-	@./scripts/zainstaluj.sh --slajdy
+	@./scripts/zainstaluj.sh
 
 ## ——— materiały ————————————————————————————————————————————————
 
