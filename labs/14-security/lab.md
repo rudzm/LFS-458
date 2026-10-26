@@ -1,6 +1,6 @@
 # Lab 14 — zabezpieczanie klastra
 
-**22 punkty obowiązkowe + 3 dodatkowe**
+**26 punktów obowiązkowych + 3 dodatkowe**
 
 ## Cel
 
@@ -35,6 +35,7 @@ Dokładasz to, czego brakuje.
 | 5 | *(dodatkowe)* **pytania ABCD** o pluginy admission, kody 401/403 i bramki żądania | 3 |
 | 6 | **Pytania ABCD** — uprawnienia, PSA, tryby autoryzacji | 2 |
 | 7 | Pluginy admission: włączenie `AlwaysPullImages`, wyłączenie `LimitRanger`, dowód na Podzie | 4 |
+| 8 | Użytkownik `anna` z certyfikatu: CSR, akceptacja, RBAC na grupę, własny kontekst | 4 |
 
 ## Na co zwrócić uwagę
 
@@ -55,6 +56,11 @@ Dokładasz to, czego brakuje.
   flagach mirror Poda (`kubectl -n kube-system get pod -l component=kube-apiserver -o yaml | grep admission`).
   `labctl cleanup 14` przywraca oryginalne flagi z kopii, którą `labctl` zrobił
   przed zadaniem.
+- **Zadanie 8** — zanim zaakceptujesz wniosek, zdekoduj `spec.request`:
+  kolumna `REQUESTOR` pokazuje Ciebie, a nie przyszłego użytkownika.
+  `labctl cleanup 14` usuwa wniosek oraz kontekst i użytkownika `anna`
+  z Twojego kubeconfiga; pliki `anna.key`, `anna.csr` i `anna.crt` zostają tam,
+  gdzie je utworzyłeś.
 - Zrób ten sam eksperyment na każdym nowym klastrze, zanim zaufasz politykom.
   Kilka poleceń odpowiada na pytanie, na które dokumentacja nie odpowie.
 

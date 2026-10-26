@@ -146,5 +146,29 @@ k delete pod sprawdzian -n lfs458-m14-wtyczki --ignore-not-found >/dev/null
 k run sprawdzian -n lfs458-m14-wtyczki --image=nginx:1.27-alpine --image-pull-policy=IfNotPresent
 k get pod sprawdzian -n lfs458-m14-wtyczki -o jsonpath='   {.spec.containers[0].imagePullPolicy} {.spec.containers[0].resources}{"\n"}'
 
+echo "→ zadanie 8: użytkownik z certyfikatu"
+ROB=$(mktemp -d)
+openssl genrsa -out "$ROB/anna.key" 2048 2>/dev/null
+openssl req -new -key "$ROB/anna.key" -out "$ROB/anna.csr" -subj "/CN=anna/O=zespol-sklep"
+cat <<YAML | k apply -f -
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: lfs458-anna
+spec:
+  request: $(base64 -w0 < "$ROB/anna.csr")
+  signerName: kubernetes.io/kube-apiserver-client
+  expirationSeconds: 86400
+  usages: ["client auth"]
+YAML
+k certificate approve lfs458-anna
+until k get csr lfs458-anna -o jsonpath='{.status.certificate}' 2>/dev/null | grep -q .; do sleep 1; done
+k get csr lfs458-anna -o jsonpath='{.status.certificate}' | base64 -d > "$ROB/anna.crt"
+k create role czytelnik-podow --verb=get,list,watch --resource=pods -n "$NS" 2>/dev/null || true
+k create rolebinding zespol-czyta --role=czytelnik-podow --group=zespol-sklep -n "$NS" 2>/dev/null || true
+kubectl config set-credentials anna --client-certificate="$ROB/anna.crt" --client-key="$ROB/anna.key" --embed-certs >/dev/null
+kubectl config set-context anna@lfs458 --cluster=kind-lfs458 --user=anna --namespace="$NS" >/dev/null
+echo "   anna: get pods → $(kubectl --context anna@lfs458 auth can-i list pods), delete → $(kubectl --context anna@lfs458 auth can-i delete pods)"
+
 echo
 echo "Gotowe. Weryfikacja: labctl check 14"

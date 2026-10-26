@@ -885,7 +885,7 @@ kubectl exec -n lfs458-m14 zabroniony -- wget -qO- --timeout=4 http://$IP:5678
 
 <div data-marpit-fragment>
 
-**22 punkty + 3 dodatkowe**
+**26 punktów + 3 dodatkowe**
 
 </div>
 
@@ -903,7 +903,8 @@ Zabezpieczysz Poda pełnym `securityContext`, włączysz Pod Security Admission
 na poziomie `restricted` i sprawdzisz, że namespace odrzuca uprzywilejowany
 Pod, a potem zbudujesz scenę z trzema Podami i **doświadczalnie udowodnisz**,
 że NetworkPolicy blokuje jednego klienta, a drugiego przepuszcza.
-Na koniec zmienisz zestaw pluginów admission i zobaczysz skutek na Podzie.
+Potem zmienisz zestaw pluginów admission, a na koniec wpuścisz do klastra
+użytkownika z certyfikatem i dasz mu uprawnienia przez RBAC.
 
 </div>
 

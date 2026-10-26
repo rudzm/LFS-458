@@ -58,6 +58,14 @@ cleanup:
     script: |
       kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete namespace lfs458-m14-quiz \
         --ignore-not-found --wait=true
+  - name: "Usuwam wniosek CSR i wpisy użytkownika anna z kubeconfiga"
+    timeout: 1m
+    ignoreError: true
+    script: |
+      kubectl --context "${KUBECONTEXT:-kind-lfs458}" delete csr lfs458-anna --ignore-not-found
+      kubectl config delete-context anna@lfs458 >/dev/null 2>&1 || true
+      kubectl config delete-user anna >/dev/null 2>&1 || true
+      echo "anna usunięta z kubeconfiga"
 
 tasks:
   - id: task-1
@@ -650,3 +658,100 @@ tasks:
                   -o jsonpath='{.spec.containers[0].resources.requests}' 2>&1)
             if [ -z "$R" ]; then echo "WYNIK: brak requests"; else echo "WYNIK: Pod ma requests $R — LimitRanger działał przy jego zapisie"; fi
           stdoutMatches: "WYNIK: brak requests"
+
+  - id: task-8
+    points: 4
+    przygotuj:
+      opis: "sprawdzam namespace lfs458-m14…"
+      timeout: 1m
+      script: |
+        K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+        $K create namespace lfs458-m14 --dry-run=client -o yaml | $K apply -f - >/dev/null
+    description: |
+      **Wpuść nowego użytkownika z certyfikatem.**
+
+      1. Wygeneruj klucz i wniosek dla użytkownika **`anna`** w grupie
+         **`zespol-sklep`**.
+      2. Złóż go jako `CertificateSigningRequest` o nazwie **`lfs458-anna`**
+         (signer `kubernetes.io/kube-apiserver-client`, ważność 24 h).
+      3. Jako administrator sprawdź, kogo dotyczy wniosek, i go **zaakceptuj**.
+      4. Daj grupie `zespol-sklep` prawo **czytania** Podów w `lfs458-m14`:
+         Role **`czytelnik-podow`**, RoleBinding **`zespol-czyta`**.
+      5. Zbuduj kontekst **`anna@lfs458`** i sprawdź, że `anna` widzi Pody,
+         ale nie może ich usuwać.
+
+      > Wszystkie kroki są na slajdach „Użytkownik z certyfikatu” — od `openssl`
+      > do `kubectl --context anna@lfs458 get pods`.
+    hints:
+      - "Wniosek: `openssl req -new -key anna.key -out anna.csr -subj \"/CN=anna/O=zespol-sklep\"`. W obiekcie CSR pole `spec.request` to plik `.csr` zakodowany w base64 (`base64 -w0`)."
+      - "Zanim zatwierdzisz: `kubectl get csr lfs458-anna -o jsonpath='{.spec.request}' | base64 -d | openssl req -noout -subject`. Potem `kubectl certificate approve lfs458-anna`."
+      - "Role i RoleBinding na grupę:\n\n```bash\nkubectl create role czytelnik-podow --verb=get,list,watch --resource=pods -n lfs458-m14\nkubectl create rolebinding zespol-czyta --role=czytelnik-podow --group=zespol-sklep -n lfs458-m14\n```"
+      - "Kontekst: `kubectl config set-credentials anna --client-certificate=anna.crt --client-key=anna.key --embed-certs`, potem `kubectl config set-context anna@lfs458 --cluster=kind-lfs458 --user=anna --namespace=lfs458-m14`."
+    solution: |
+      ```bash
+      openssl genrsa -out anna.key 2048
+      openssl req -new -key anna.key -out anna.csr -subj "/CN=anna/O=zespol-sklep"
+
+      cat <<EOF | kubectl apply -f -
+      apiVersion: certificates.k8s.io/v1
+      kind: CertificateSigningRequest
+      metadata:
+        name: lfs458-anna
+      spec:
+        request: $(base64 -w0 < anna.csr)
+        signerName: kubernetes.io/kube-apiserver-client
+        expirationSeconds: 86400
+        usages: ["client auth"]
+      EOF
+
+      kubectl get csr lfs458-anna -o jsonpath='{.spec.request}' | base64 -d | openssl req -noout -subject
+      kubectl certificate approve lfs458-anna
+      kubectl get csr lfs458-anna -o jsonpath='{.status.certificate}' | base64 -d > anna.crt
+
+      kubectl create role czytelnik-podow --verb=get,list,watch --resource=pods -n lfs458-m14
+      kubectl create rolebinding zespol-czyta --role=czytelnik-podow --group=zespol-sklep -n lfs458-m14
+
+      kubectl config set-credentials anna --client-certificate=anna.crt --client-key=anna.key --embed-certs
+      kubectl config set-context anna@lfs458 --cluster=kind-lfs458 --user=anna --namespace=lfs458-m14
+      kubectl --context anna@lfs458 get pods                  # działa
+      kubectl --context anna@lfs458 auth can-i delete pods    # no
+      ```
+    checks:
+      - name: "wniosek lfs458-anna zaakceptowany i certyfikat wydany"
+        resource:
+          apiVersion: certificates.k8s.io/v1
+          kind: CertificateSigningRequest
+          name: lfs458-anna
+        assert:
+          - path: "{.spec.signerName}"
+            op: eq
+            value: kubernetes.io/kube-apiserver-client
+          - path: "{.status.conditions[*].type}"
+            op: eq
+            value: Approved
+            quantifier: any
+            message: "wniosek czeka na decyzję — `kubectl certificate approve lfs458-anna`"
+          - path: "{.status.certificate}"
+            op: exists
+      - name: "certyfikat wystawiony dla CN=anna, O=zespol-sklep"
+        exec:
+          timeout: 30s
+          script: |
+            kubectl --context "${KUBECONTEXT:-kind-lfs458}" get csr lfs458-anna -o jsonpath='{.status.certificate}' 2>/dev/null \
+              | base64 -d 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | tr -d ' '
+          stdoutMatches: "(O=zespol-sklep.*CN=anna|CN=anna.*O=zespol-sklep)"
+      - name: "grupa zespol-sklep może czytać Pody w lfs458-m14, ale nie usuwać"
+        exec:
+          timeout: 30s
+          script: |
+            K="kubectl --context ${KUBECONTEXT:-kind-lfs458}"
+            CZYTA=$($K auth can-i list pods -n lfs458-m14 --as=anna --as-group=zespol-sklep 2>/dev/null)
+            USUWA=$($K auth can-i delete pods -n lfs458-m14 --as=anna --as-group=zespol-sklep 2>/dev/null)
+            echo "WYNIK: czyta=$CZYTA usuwa=$USUWA"
+          stdoutMatches: "WYNIK: czyta=yes usuwa=no"
+      - name: "kontekst anna@lfs458 loguje się jako anna"
+        exec:
+          timeout: 30s
+          script: |
+            kubectl --context anna@lfs458 auth whoami -o jsonpath='{.status.userInfo.username}' 2>&1
+          stdoutMatches: "^anna$"
