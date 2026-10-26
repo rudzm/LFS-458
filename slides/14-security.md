@@ -250,6 +250,34 @@ kubectl --context anna@lfs458 get pods                       # działa
 
 ---
 
+# LDAP, Kerberos, SSO — przez pośrednika
+
+<div data-marpit-fragment>
+
+Kubernetes **nie rozmawia** z LDAP-em, AD ani Kerberosem — potrzebny jest pośrednik:
+
+</div>
+
+<div data-marpit-fragment>
+
+| Droga | Jak działa | Przykłady narzędzi |
+|---|---|---|
+| **OIDC** | dostawca tożsamości wystawia token, apiserver go weryfikuje (`--oidc-*`, `--authentication-config`) | Keycloak (LDAP, AD, Kerberos), Dex (LDAP, GitHub, SAML), Entra ID, Okta |
+| **webhook** | apiserver pyta zewnętrzną usługę, czyj to token | Guard (LDAP, AD, GitHub) |
+| **proxy** | proxy przed apiserverem loguje i przekazuje tożsamość w nagłówkach | Teleport, Pinniped, kube-oidc-proxy |
+| **chmura** | konta z IAM dostawcy | EKS: IAM, AKS: Entra ID, GKE: konta Google |
+
+</div>
+
+<div data-marpit-fragment>
+
+> Logowanie w przeglądarce do `kubectl` dokłada plugin `kubelogin`. Każda droga
+> kończy się nazwą i grupami — dalej decyduje RBAC, jak przy certyfikatach.
+
+</div>
+
+---
+
 # Tryby autoryzacji
 
 <div data-marpit-fragment>
