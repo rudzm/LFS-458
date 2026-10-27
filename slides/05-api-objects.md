@@ -24,9 +24,10 @@ czyli kto może zrobić co i gdzie
 1. **Obiekty API** — wspólna budowa, zasięg, właściciele
 2. **Grupa v1** — co siedzi w rdzeniu
 3. **Zasoby API** — jak je odkrywać bez dokumentacji
-4. **RBAC** — cztery obiekty i jedna reguła
-5. **ServiceAccount** — `default`, tokeny i co z nimi wolno
-6. **Lab 05** — budujesz ServiceAccount z minimalnymi uprawnieniami
+4. **Job i CronJob** — praca, która ma się skończyć
+5. **RBAC** — cztery obiekty i jedna reguła
+6. **ServiceAccount** — `default`, tokeny i co z nimi wolno
+7. **Lab 05** — budujesz ServiceAccount z minimalnymi uprawnieniami
 
 </div>
 
@@ -221,7 +222,212 @@ kubectl api-resources -o wide | head
 
 <!-- _class: sekcja -->
 
-# 4. RBAC
+# 4. Job i CronJob
+
+---
+
+# Skrypt w Deploymencie to pętla
+
+<div data-marpit-fragment>
+
+```bash
+kubectl create deployment skrypt --image=busybox:1.36 -- sh -c 'echo raport gotowy'
+kubectl get pods
+# skrypt-7f8d787945-pchts   0/1   CrashLoopBackOff   5 (2m35s ago)   5m19s
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+Skrypt **zakończył się sukcesem** — pięć razy. Pody Deploymentu mają
+`restartPolicy: Always`, więc kubelet wznawia każdy zakończony kontener,
+a po kilku razach zaczyna odczekiwać coraz dłużej.
+
+</div>
+
+<div data-marpit-fragment>
+
+| Kontroler | Pilnuje, żeby… | `restartPolicy` |
+|---|---|---|
+| Deployment | N kopii **działało** | `Always` |
+| DaemonSet | na każdym node'ie coś **działało** | `Always` |
+| **Job** | praca **zakończyła się sukcesem** N razy | `Never` / `OnFailure` |
+| **CronJob** | Job powstawał **według harmonogramu** | jak w Jobie |
+
+</div>
+
+---
+
+# Job — praca do skutku
+
+<div data-marpit-fragment>
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata: {name: przelicz, namespace: lfs458-m05}
+spec:
+  completions: 4                  # ile sukcesów potrzeba (domyślnie 1)
+  parallelism: 2                  # ile Podów naraz (domyślnie 1)
+  backoffLimit: 2                 # ile porażek wolno (domyślnie 6)
+  activeDeadlineSeconds: 600      # twardy limit czasu całego Joba
+  ttlSecondsAfterFinished: 3600   # usuń Job godzinę po zakończeniu
+  template:
+    spec:
+      restartPolicy: Never        # Always jest zabronione
+      containers:
+        - {name: licz, image: busybox:1.36, command: ["sh", "-c", "sleep 6"]}
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+```bash
+kubectl get jobs -n lfs458-m05
+# NAME       STATUS     COMPLETIONS   DURATION   AGE
+# przelicz   Complete   4/4           18s        61s
+```
+
+</div>
+
+---
+
+# `Never` czy `OnFailure` — co zostaje po porażce
+
+<div class="kolumny">
+<div>
+
+<div data-marpit-fragment>
+
+### `Never`
+
+</div>
+
+<div data-marpit-fragment>
+
+Każda próba to **nowy Pod**. Po
+`backoffLimit: 2` zostają trzy:
+
+```text
+pada-never-479ll   0/1   Error
+pada-never-nxqjb   0/1   Error
+pada-never-wmpgq   0/1   Error
+```
+
+Każdy ma swoje logi.
+
+</div>
+
+</div>
+<div>
+
+<div data-marpit-fragment>
+
+### `OnFailure`
+
+</div>
+
+<div data-marpit-fragment>
+
+Kubelet restartuje kontener
+**w tym samym Podzie**:
+
+```text
+pada-onfailure-8tv5b   0/1   Error   1
+… 10 s później:
+No resources found
+```
+
+Po przekroczeniu limitu Job
+**usuwa Pod** — razem z logami.
+
+</div>
+
+</div>
+</div>
+
+<div data-marpit-fragment>
+
+```bash
+kubectl get job pada-never -o jsonpath='{.status.conditions[?(@.type=="Failed")].reason}'
+# BackoffLimitExceeded       ← albo DeadlineExceeded po activeDeadlineSeconds
+```
+
+</div>
+
+---
+
+# CronJob — Job według harmonogramu
+
+<div data-marpit-fragment>
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: kopia, namespace: lfs458-m05}
+spec:
+  schedule: "0 2 * * *"            # minuta godzina dzień miesiąc dzień-tygodnia
+  timeZone: Europe/Warsaw          # bez tego: strefa controller-managera
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3    # tyle zakończonych Jobów zostaje
+  failedJobsHistoryLimit: 1
+  jobTemplate:                     # zwykły spec Joba
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers: [{name: kopia, image: busybox:1.36, command: ["date"]}]
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+```text
+   CronJob kopia  ──owns──►  Job kopia-29884710  ──owns──►  Pod
+                                  └─ minuta startu liczona od 1970 roku
+```
+
+</div>
+
+---
+
+# Trzy pytania do każdego CronJoba
+
+<div data-marpit-fragment>
+
+| Pole | Odpowiada na pytanie | Wartości |
+|---|---|---|
+| `concurrencyPolicy` | co, gdy poprzedni Job **jeszcze trwa**? | `Allow` *(domyślnie)*, `Forbid`, `Replace` |
+| `startingDeadlineSeconds` | ile **spóźnienia** jeszcze akceptuję? | sekundy; po nich termin przepada |
+| `suspend` | jak **wstrzymać** bez kasowania? | `true` / `false` |
+
+</div>
+
+<div data-marpit-fragment>
+
+```bash
+kubectl create job kopia-teraz --from=cronjob/kopia -n lfs458-m05   # od razu
+kubectl patch cronjob kopia -n lfs458-m05 -p '{"spec":{"suspend":true}}'
+```
+
+</div>
+
+<div data-marpit-fragment>
+
+> Harmonogram nie jest gwarancją: w rzadkich sytuacjach kontroler uruchomi
+> Job **dwa razy** albo **wcale**. Zadanie z CronJoba musi być
+> **idempotentne** — drugie uruchomienie nie może niczego zepsuć.
+
+</div>
+
+---
+
+<!-- _class: sekcja -->
+
+# 5. RBAC
 
 ---
 
@@ -340,7 +546,7 @@ kubectl auth can-i --list --as=…       # pełna lista uprawnień
 
 <!-- _class: sekcja -->
 
-# 5. ServiceAccount
+# 6. ServiceAccount
 
 ---
 
@@ -593,6 +799,7 @@ poleceniem `kubectl auth can-i`.
 * zasięg obiektu sprawdzasz `kubectl api-resources --namespaced=false`
 * PV jest klastrowy, PVC — namespace'owany
 * `ownerReferences` buduje drzewo własności i napędza kasowanie kaskadowe
+* Job pilnuje, żeby praca się **zakończyła**; `Never` zostawia nieudane Pody z logami
 * RBAC **tylko pozwala**; uprawnienia to suma bindingów, nic się nie odejmuje
 * grupa rdzeniowa w regule to `""`; podzasoby wymienia się osobno
 * `kubectl auth can-i --list --as=…` to najszybszy sposób sprawdzenia uprawnień
