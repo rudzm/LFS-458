@@ -43,3 +43,6 @@ Thumbs.db
 
 # Python
 __pycache__/
+
+# Tunel pokazu GitOps (demo/gitops/demo.sh)
+.tunel.pid

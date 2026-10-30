@@ -1,0 +1,22 @@
+# Jedyny obiekt, który trener tworzy ręcznie. Resztę Argo CD bierze z gita.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: witryna
+  namespace: argocd
+  # Usunięcie Application usuwa też to, co wdrożyła — inaczej zostają sieroty.
+  finalizers: [resources-finalizer.argocd.argoproj.io/foreground]
+spec:
+  project: default
+  source:
+    repoURL: git://git.gitops-git.svc.cluster.local/aplikacja.git
+    targetRevision: main
+    path: .
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: witryna
+  syncPolicy:
+    automated:
+      prune: true       # plik zniknął z gita → obiekt znika z klastra
+      selfHeal: true    # ręczna zmiana w klastrze → cofnięta do stanu z gita
+    syncOptions: [CreateNamespace=true]

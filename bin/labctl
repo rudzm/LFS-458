@@ -603,8 +603,20 @@ def id_zadania(mod: dict, wybor: str | None) -> str | None:
     raise SystemExit(2)
 
 
+def blokada_egzaminu(mod: dict) -> bool:
+    """W trakcie egzaminu nic nie podpowiada — także `check` i `next`."""
+    if not egzamin_trwa(mod):
+        return False
+    e = stan_egzaminu(str(mod["module"]))
+    print(C.yellow(f"\n  Egzamin trwa (zostało {zegar(pozostalo_sekund(mod, e))}) — "
+                   "wynik i szczegóły dopiero po zakończeniu."))
+    print(C.dim(f"  zakończ w sesji klawiszem k: labctl lab {mod['module']}\n"))
+    return True
+
 def cmd_check(args) -> int:
     mod, _ = load_module(args.module)
+    if blokada_egzaminu(mod):
+        return 2
     wybrane = id_zadania(mod, getattr(args, "task", None))
     if not zapewnij_srodowisko(mod, pomin=getattr(args, "no_env", False)):
         return 2
@@ -875,6 +887,8 @@ def sesja(mod: dict, katalog: Path, args) -> int:
     pokazujemy jedno zadanie, czekamy na Enter i od razu mówimy, co jest nie tak.
     Zaliczone zadanie przesuwa nas dalej samo.
     """
+    if mod.get("egzamin"):
+        return sesja_egzaminu(mod, args)
     num = str(mod["module"])
     ctx = env_for(mod)["context"]
     env = run_env(mod)
@@ -1044,6 +1058,183 @@ def sesja(mod: dict, katalog: Path, args) -> int:
     return 0 if zdobyte == total else 1
 
 
+# ── egzamin próbny ────────────────────────────────────────────────────────
+# Moduł z kluczem `egzamin:` działa jak egzamin, nie jak lab: zadania widać
+# wszystkie i można między nimi skakać, ale nie ma podpowiedzi, rozwiązań ani
+# sprawdzania w trakcie. Wynik pada raz — po `k` albo po upływie czasu —
+# i liczy częściowe punkty, tak jak na CKA.
+
+def stan_egzaminu(num: str) -> dict | None:
+    return load_state().get(num, {}).get("egzamin")
+
+def zapisz_stan_egzaminu(num: str, e: dict | None) -> None:
+    st = load_state()
+    if e is None:
+        st.get(num, {}).pop("egzamin", None)
+    else:
+        st.setdefault(num, {})["egzamin"] = e
+    save_state(st)
+
+def pozostalo_sekund(mod: dict, e: dict) -> int:
+    return int(e["start"] + mod["egzamin"].get("minuty", 120) * 60 - time.time())
+
+def egzamin_trwa(mod: dict) -> bool:
+    e = stan_egzaminu(str(mod["module"]))
+    return bool(e and not e.get("koniec") and pozostalo_sekund(mod, e) > 0)
+
+def zegar(sekundy: int) -> str:
+    m = max(0, sekundy) // 60
+    return f"{m // 60}:{m % 60:02d}"
+
+def ocen_egzamin(mod: dict, e: dict) -> None:
+    """Sprawdza wszystko naraz i zapisuje wynik. Punkty częściowe: ułamek checków."""
+    num, ctx, env = str(mod["module"]), env_for(mod)["context"], run_env(mod)
+    zadania = mod.get("tasks") or []
+    print(C.dim("\n  sprawdzam wszystkie zadania — to potrwa chwilę…\n"))
+    zdobyte = total = 0
+    for nr, t in enumerate(zadania, 1):
+        checki = t.get("checks") or []
+        zielone = sum(1 for c in checki if run_check(ctx, c, env)[0])
+        pts = t.get("points", 0)
+        wynik = pts * zielone // len(checki) if checki else 0
+        total += pts
+        zdobyte += wynik
+        glif = C.green(OK) if wynik == pts else (C.yellow("◐") if wynik else C.red(BAD))
+        print("  " + glif + " " + kolumna(f"zadanie {nr}", 11)
+              + kolumna(tytul_zadania(t)[:46], 48) + C.dim(f"{wynik}/{pts}"))
+    procent = round(100 * zdobyte / total) if total else 0
+    prog = mod["egzamin"].get("prog", 66)
+    e.update(koniec=time.time(), wynik=procent)
+    zapisz_stan_egzaminu(num, e)
+    print()
+    print(f"  {pasek(zdobyte, total)}  {C.bold(f'{zdobyte}/{total} pkt · {procent}%')}"
+          + C.dim(f"  (próg {prog}%)"))
+    print()
+    print(C.green("  Zdany.") if procent >= prog else C.red("  Niezdany."))
+    print()
+    print(C.dim(f"  co nie przeszło:   labctl check {num} -v"))
+    print(C.dim(f"  rozwiązania:       labctl solution {num} --task N"))
+    print(C.dim(f"  od nowa:           labctl cleanup {num} && labctl lab {num}"))
+    print()
+
+def sesja_egzaminu(mod: dict, args) -> int:
+    num = str(mod["module"])
+    env = run_env(mod)
+    zadania = mod.get("tasks") or []
+    minuty = mod["egzamin"].get("minuty", 120)
+    e = stan_egzaminu(num)
+
+    print()
+    print(C.bold(f"  {mod['title']}"))
+    print(C.dim(f"  {len(zadania)} zadań · {sum(t.get('points', 0) for t in zadania)} pkt"
+                f" · {minuty} min · próg {mod['egzamin'].get('prog', 66)}%"))
+    print()
+
+    if e and e.get("koniec"):
+        print(f"  Egzamin zakończony — wynik {C.bold(str(e.get('wynik', '?')) + '%')}.")
+        print(C.dim(f"  szczegóły: labctl check {num} -v · od nowa: labctl cleanup {num} && labctl lab {num}"))
+        print()
+        return 0
+
+    if not zapewnij_srodowisko(mod, pomin=getattr(args, "no_env", False)):
+        return 2
+
+    # Setup tylko przy starcie. Psuje klaster na potrzeby zadań naprawczych,
+    # więc ponowienie przy wznowieniu zepsułoby to, co kursant już naprawił.
+    if not e:
+        if mod.get("intro"):
+            print(md_na_terminal(mod["intro"]))
+            print()
+        try:
+            odp = input(f"  Start? Zegar ruszy od razu i biegnie {minuty} min. [T/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 130
+        if odp not in ("", "t", "tak", "y", "yes"):
+            return 0
+        if mod.get("setup"):
+            run_phase(num, "setup", "Przygotowuję egzamin")
+        e = {"start": time.time(), "pozycja": 0, "flagi": [], "przygotowane": []}
+        zapisz_stan_egzaminu(num, e)
+    else:
+        print(C.dim(f"  wznawiam — zostało {zegar(pozostalo_sekund(mod, e))}"))
+        print()
+
+    i = min(e.get("pozycja", 0), len(zadania) - 1)
+    while True:
+        if pozostalo_sekund(mod, e) <= 0:
+            print(C.yellow("\n  Czas minął.\n"))
+            ocen_egzamin(mod, e)
+            return 0
+        t = zadania[i]
+        flaga = C.yellow("  ⚑") if t["id"] in e["flagi"] else ""
+        print(C.dim("  " + "─" * 62))
+        print(C.bold(f"  Zadanie {i + 1} z {len(zadania)}") + C.dim(f"  ·  {t.get('points', 0)} pkt")
+              + flaga + C.dim(f"  ·  zostało {zegar(pozostalo_sekund(mod, e))}"))
+        print()
+        print(md_na_terminal(t.get("description", "")))
+        print()
+        # `przygotuj` raz na egzamin — z tego samego powodu co setup.
+        if t.get("przygotuj") and t["id"] not in e["przygotowane"]:
+            przygotuj_zadanie(t, env, t["przygotuj"].get("opis", "przygotowuję zadanie…"))
+            e["przygotowane"].append(t["id"])
+            zapisz_stan_egzaminu(num, e)
+
+        while True:
+            print("  " + C.dim(" · ").join([
+                C.bold("Enter") + C.dim(" następne"), C.bold("p") + C.dim(" poprzednie"),
+                C.bold("NR") + C.dim(" skocz"), C.bold("l") + C.dim(" lista"),
+                C.bold("f") + C.dim(" oznacz"), C.bold("k") + C.dim(" zakończ i oceń"),
+                C.bold("q") + C.dim(" wyjdź")]))
+            try:
+                odp = input("  > ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 130
+            if odp in ("q", "quit", "wyjdz"):
+                print(C.dim(f"\n  wychodzę — zegar biegnie dalej "
+                            f"(zostało {zegar(pozostalo_sekund(mod, e))}); wróć przez labctl lab {num}\n"))
+                return 0
+            if odp == "l":
+                print()
+                for nr, z in enumerate(zadania, 1):
+                    znak = C.yellow("⚑") if z["id"] in e["flagi"] else " "
+                    print(f"  {znak} {nr:>2}. " + kolumna(tytul_zadania(z)[:52], 54)
+                          + C.dim(f"{z.get('points', 0)} pkt"))
+                print()
+                continue
+            if odp == "f":
+                if t["id"] in e["flagi"]:
+                    e["flagi"].remove(t["id"])
+                else:
+                    e["flagi"].append(t["id"])
+                zapisz_stan_egzaminu(num, e)
+                print(C.dim("  oznaczone\n" if t["id"] in e["flagi"] else "  odznaczone\n"))
+                continue
+            if odp == "k":
+                try:
+                    pewny = input("  Zakończyć egzamin i policzyć wynik? [t/N] ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    pewny = "n"
+                if pewny in ("t", "tak", "y", "yes"):
+                    ocen_egzamin(mod, e)
+                    return 0
+                print()
+                continue
+            if odp == "":
+                i = (i + 1) % len(zadania)
+            elif odp == "p":
+                i = (i - 1) % len(zadania)
+            elif odp.isdigit() and 1 <= int(odp) <= len(zadania):
+                i = int(odp) - 1
+            else:
+                print(C.dim("  nie znam takiej opcji — w egzaminie nie ma podpowiedzi ani sprawdzania\n"))
+                continue
+            e["pozycja"] = i
+            zapisz_stan_egzaminu(num, e)
+            break
+
+
 def cmd_lab(args) -> int:
     mod, d = load_module(args.module)
     # Sesja prowadzona wymaga terminala. W potoku albo w CI wypisujemy
@@ -1059,6 +1250,8 @@ def cmd_lab(args) -> int:
 
 def cmd_next(args) -> int:
     mod, _ = load_module(args.module)
+    if blokada_egzaminu(mod):
+        return 2
     if not zapewnij_srodowisko(mod, pomin=getattr(args, "no_env", False)):
         return 2
     if not cluster_reachable(mod):
@@ -1081,6 +1274,9 @@ def cmd_next(args) -> int:
 
 def cmd_hint(args) -> int:
     mod, _ = load_module(args.module)
+    if mod.get("egzamin"):
+        print(C.dim(f"\n  Moduł {mod['module']} to egzamin próbny — podpowiedzi nie ma.\n"))
+        return 0
     wybrane = id_zadania(mod, getattr(args, "task", None))
     if not zapewnij_srodowisko(mod, pomin=getattr(args, "no_env", False)):
         return 2
@@ -1140,6 +1336,8 @@ def cmd_cleanup(args) -> int:
     # czego sprzątać — stawianie klastra po to, żeby usunąć z niego namespace,
     # byłoby absurdem.
     mod, _ = load_module(args.module)
+    if mod.get("egzamin"):
+        zapisz_stan_egzaminu(str(mod["module"]), None)   # następne podejście od zera
     if not srodowisko_stoi(env_for(mod)):
         print(C.dim(f"\n  środowisko modułu {mod['module']} nie stoi — nie ma czego sprzątać\n"))
         return 0
@@ -1463,6 +1661,8 @@ def cmd_validate(args) -> int:
         if deklar and int(deklar.group(1)) != oblig:
             bledy.append(f"{d.name}: lab.md mówi {deklar.group(1)} pkt, checks.yaml daje {oblig}")
         for t in mod.get("tasks") or []:
+            if mod.get("egzamin") and (t.get("hints") or t.get("quiz")):
+                bledy.append(f"{d.name}/{t['id']}: egzamin nie może mieć podpowiedzi ani quizów")
             if t.get("quiz"):
                 q = t["quiz"]
                 if not (q.get("pytania") or []):

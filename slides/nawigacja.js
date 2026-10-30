@@ -18,7 +18,7 @@
     '04-apis-access', '05-api-objects', '06-deployments', '07-helm-kustomize',
     '08-volumes-data', '09-services', '10-traffic', '11-scheduling',
     '12-logging-troubleshooting', '13-crd', '14-security',
-    '15-high-availability', '16-cluster-maintenance'
+    '15-high-availability', '16-cluster-maintenance', '17-gitops'
   ];
 
   var plik = decodeURIComponent(location.pathname.split('/').pop() || '');

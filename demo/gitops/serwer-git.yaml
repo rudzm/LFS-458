@@ -1,0 +1,47 @@
+# Serwer git w klastrze — żeby demo nie zależało od GitHuba ani od kont
+# kursantów. `git daemon` po protokole git:// (port 9418), bez uwierzytelniania
+# i z prawem zapisu: wyłącznie na pokaz, nigdy w prawdziwym klastrze.
+# Repozytorium żyje w emptyDir, więc restart Poda je kasuje — `postaw.sh`
+# wypycha je wtedy od nowa.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitops-git
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git
+  namespace: gitops-git
+spec:
+  selector:
+    matchLabels: {app: git}
+  template:
+    metadata:
+      labels: {app: git}
+    spec:
+      containers:
+        - name: git
+          image: alpine:3.22
+          command: ["sh", "-c"]
+          args:
+            - |
+              apk add --no-cache git-daemon >/dev/null
+              mkdir -p /srv/git && cd /srv/git
+              [ -d aplikacja.git ] || git init --quiet --bare -b main aplikacja.git
+              exec git daemon --reuseaddr --export-all --enable=receive-pack \
+                --base-path=/srv/git --informative-errors /srv/git
+          ports: [{containerPort: 9418, name: git}]
+          readinessProbe:
+            tcpSocket: {port: 9418}
+          volumeMounts: [{name: repo, mountPath: /srv/git}]
+      volumes: [{name: repo, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: git
+  namespace: gitops-git
+spec:
+  selector: {app: git}
+  ports: [{name: git, port: 9418, targetPort: git}]
